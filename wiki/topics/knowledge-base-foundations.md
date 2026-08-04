@@ -51,20 +51,23 @@ Two derived rules follow, and most operational mistakes are a violation of one o
 
 1. Never ask a lower layer to do a higher layer's job. TigerFS savepoints are not knowledge
    transactions; Git is not a backup; a search index is not a source of truth.
-2. Never let a higher layer assume a lower layer's guarantee without testing it. The open
-   case is [[claim.git-on-tigerfs-unverified]].
+2. Never let a higher layer assume a lower layer's guarantee without testing it. This one was
+   tested and failed: [[claim.git-on-tigerfs-fails-the-gate]]. Git runs on local disk;
+   PostgreSQL and TigerFS keep the raw and control stores.
 
 Reads are made coherent by [[concept.commit-pinned-read]]; evidence is made durable by
 [[concept.content-addressed-store]].
 
 ## Disputed or Uncertain
 
-Whether all four layers belong in one deployment is settled for this design but not
-universally: the architecture doc itself notes that if Git-on-TigerFS fails its
-compatibility gate, the Git repository moves to a certified filesystem and PostgreSQL keeps
-only the raw and control stores. That fallback drops the single-physical-store property.
-See [[claim.git-on-tigerfs-unverified]] and [[question.retrieval-scale-threshold]] for the
-two open questions that could still change the shape of this stack.
+The single-physical-store property is **gone**, and this is no longer hypothetical. The
+architecture pre-committed to a fallback if Git-on-TigerFS failed its gate; it failed, so the
+Git repository sits on local disk while PostgreSQL and TigerFS keep the raw and control
+stores. Bytes are still durable and transactional in PostgreSQL; they are just not the *same*
+bytes that hold the published wiki. See [[claim.git-on-tigerfs-fails-the-gate]].
+
+Still open: whether Linux/FUSE would pass the same gate, and
+[[question.retrieval-scale-threshold]].
 
 ## Evidence
 

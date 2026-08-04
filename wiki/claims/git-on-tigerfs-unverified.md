@@ -1,16 +1,17 @@
 ---
 id: claim.git-on-tigerfs-unverified
 page_type: claim
-status: active
+status: superseded
 owner: team.platform
 visibility: public
 confidence: high
-summary: Running Git inside TigerFS is a tested deployment assumption, not an established guarantee, and it is this stack's largest single risk.
+summary: Superseded 2026-08-04 by a measured gate run. Kept for the reasoning that made the risk explicit before it was tested.
 updated_at: 2026-08-04
 sources:
   - source.ai-knowledge-base-architecture
   - source.tigerfs-spec
 related:
+  - claim.git-on-tigerfs-fails-the-gate
   - entity.tigerfs
   - entity.git
   - topic.knowledge-base-foundations
@@ -24,7 +25,12 @@ supersedes: []
 **Claim.** The correctness of this knowledge base depends on TigerFS faithfully implementing
 the filesystem primitives Git relies on, and that dependency has not been verified.
 
-**Status.** Open. Blocks production use. Confidence in the *claim* is high — the architecture
+**Superseded on 2026-08-04** by [[claim.git-on-tigerfs-fails-the-gate]]: the gate was run
+and Git on TigerFS failed 23 of 34 checks. Read that page for the result; this one is kept
+because the reasoning below is what made the risk checkable in advance.
+
+**Status.** Resolved — the claim below was correct that the dependency was unverified, and the
+verification came out negative. Blocked production use. Confidence in the *claim* is high — the architecture
 doc states it explicitly as an unresolved risk. Confidence in Git-on-TigerFS *working* is
 unknown, which is the whole point.
 
@@ -63,10 +69,11 @@ architecture review, not a quiet config change.
 
 ## Disputed or Uncertain
 
-Everything about the outcome. No test in the matrix has been run in this repository, so we
-cannot say whether the failure mode is "works fine", "works slowly", or "silently corrupts
-packfiles under concurrent gc". Until the gate runs, treat any claim that this stack is
-production-ready as unsupported.
+Nothing here remains open. When written, the honest answer was "we cannot say whether the
+failure mode is works-fine, works-slowly, or silently-corrupts-packfiles". The measured answer
+turned out to be closest to the third: `git fsck` reported corruption after commit, merge,
+repack, and gc. See [[claim.git-on-tigerfs-fails-the-gate]] for scope limits — the run was
+macOS/NFS on PostgreSQL 17.9, and Linux/FUSE is untested.
 
 ## Evidence
 

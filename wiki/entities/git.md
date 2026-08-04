@@ -59,8 +59,12 @@ ref last, so a crash mid-write leaves unreachable objects rather than a half-pub
 
 ## Disputed or Uncertain
 
-Git's guarantees here are inherited from the filesystem beneath it, and that filesystem is
-[[entity.tigerfs]] rather than local disk — see [[claim.git-on-tigerfs-unverified]].
+Git's guarantees are inherited from the filesystem beneath it, and that dependency turned out
+to be decisive: on TigerFS, Git failed 23 of 34 gate checks, so **the repository runs on local
+disk** ([[claim.git-on-tigerfs-fails-the-gate]]). Everything on this page — branches,
+worktrees, compare-and-swap publication — was verified working there, and none of it survived
+on TigerFS.
+
 Textual merge success is also not semantic merge success: two conflict-free edits can still
 change the same conclusion in incompatible ways, which is why release requires review and not
 just a clean merge.
