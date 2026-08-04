@@ -104,6 +104,40 @@ psql -d ai_kb -c "\dt tigerfs.*"                              # matching tables 
 tail -f /path/to/tigerfs.log | grep -i error                  # the DDL error, if any
 ```
 
+### Configuration: the file takes FLAT keys
+
+This wasted an hour, so it goes first. `tigerfs config show` prints a **nested** layout
+(`filesystem:` / `nfs:` / `connection:`), but the config file is parsed with **flat** keys. A
+nested file is silently ignored, every field validates as zero, and you get:
+
+```text
+Error: invalid port: 0 (must be 1-65535)
+```
+
+which looks like a port problem and is not. Environment variables are flat too:
+`TIGERFS_ATTR_TIMEOUT` works, `TIGERFS_FILESYSTEM_ATTR_TIMEOUT` does not. The file must also
+supply every validated field, or validation fails on the next zero it finds.
+
+A working file is committed here as [tigerfs-config.yaml](tigerfs-config.yaml); copy it to
+`~/.config/tigerfs/config.yaml` (the path is fixed — `--config-dir` does not move it) and
+confirm with `tigerfs config validate && tigerfs config show`.
+
+### Tuning that measurably helps
+
+| Setting | Default | Use | Why |
+|---|---|---|---|
+| `attr_timeout` | `1s` | `0s` | Git stats a file it just wrote; a 1s cache makes the stat lie |
+| `entry_timeout` | `1s` | `0s` | Same, for directory entries — fixes `rename()` and close-to-open |
+| `trailing_newlines` | `true` | `false` | Documented as "append newline to file reads" |
+| `metadata_refresh_interval` | `10s` | `1s` | Staleness during rapid create/remove |
+| `nfs_cache_idle_timeout` | `5m` | **leave at `5m`** | See the warning below |
+
+**Do not lower `nfs_cache_idle_timeout`.** It is tempting, because a long handle cache is what
+makes a deleted filename un-reusable. But at `50ms` with a `10ms` reaper, live handles are
+evicted mid-operation and results get *worse* — a 200-file commit starts failing and the gate
+drops from 21/35 to 17/35. Long enough to keep handles alive is long enough to poison name
+reuse; there is no value that satisfies both.
+
 ### macOS notes
 
 - TigerFS on macOS uses an **NFS loopback backend**, not FUSE — the log says
@@ -115,9 +149,16 @@ tail -f /path/to/tigerfs.log | grep -i error                  # the DDL error, i
   healthy. To recover: `sudo umount -f <path>`.
 - Run the mount process in a way that lets it hold the foreground (`--foreground`, own terminal
   or supervisor). Piping its output into another command blocks that command indefinitely.
-- Without `COPYFILE_DISABLE=1`, macOS writes AppleDouble sidecars (`._name`) onto the mount.
-  TigerFS rejects them with `unsupported format` but they still land as rows — 5,464 bytes of
-  metadata per file.
+- macOS writes AppleDouble sidecars (`._name`) onto the mount — 5,464 bytes of metadata per
+  file, and **40 of them inside one fresh `.git`**. macOS stamps files with a
+  `com.apple.provenance` xattr, the mount cannot store xattrs, so the kernel writes a sidecar
+  instead. Git then reads them as refs, loose objects, and pack indexes, and `git fsck` reports
+  corruption that does not exist. `COPYFILE_DISABLE=1` does **not** stop this — it only affects
+  `cp` and `tar`. This is the single largest reason Git looks broken here, and it is a
+  macOS-on-NFS artifact rather than a TigerFS defect.
+- `ops/gate-git-on-tigerfs` accepts `GATE_STRIP_APPLEDOUBLE=1`, which deletes sidecars before
+  every git call. It is a diagnostic that approximates a filesystem without the AppleDouble
+  shim; it is not a supported way to run a repository.
 - Binary bodies are stored **base64-encoded** (the `encoding` column), so budget roughly 33%
   storage amplification for binary evidence.
 
@@ -134,12 +175,24 @@ mkdir -p /tmp/gate-control && ops/gate-git-on-tigerfs /tmp/gate-control   # cont
 ops/gate-git-on-tigerfs /mnt/ai-kb/kb_git                                 # the real gate
 ```
 
-Result on 2026-08-04 (macOS, TigerFS 0.7.0, PG 17.9 + shim, git 2.50.1): **11 passed, 23
-failed.** Passing: `O_EXCL`, `fsync`, 1MB binary round trip, `git init`, a 200-file commit, a
-non-conflicting merge, the worktree lifecycle, 8 concurrent ref creations. Failing: atomic
-rename, close-to-open visibility, truncate-then-append, `git fsck` after every destructive
-operation, the 8MB binary commit, rebase/cherry-pick/revert, conflict detection, ref
-compare-and-swap, parallel worktree commits, repack, and gc.
+Results on 2026-08-04 (macOS, TigerFS 0.7.0, PG 17.9 + shim, git 2.50.1):
+
+| Configuration | Score |
+|---|---|
+| Defaults | 11 / 34 |
+| Tuned + `GATE_STRIP_APPLEDOUBLE=1` | **21 / 35** |
+| Tuned but `nfs_cache_idle_timeout=50ms` | 17 / 35 |
+
+Tuning fixed `rename()`, truncate-then-append, and close-to-open visibility. Stripping sidecars
+fixed **every** `fsck`. What remains is one defect that no setting addresses: a deleted filename
+cannot be recreated (10/10 `Input/output error`), which is exactly how Git uses `index.lock`,
+`HEAD.lock`, and `packed-refs.lock`. The first attempt fails, leaves a stale lock, and every
+later operation dies with `File exists`. Full analysis:
+[claim.git-on-tigerfs-fails-the-gate](../wiki/claims/git-on-tigerfs-fails-the-gate.md).
+
+Also worth knowing before designing around TigerFS: it supports exactly two workspace formats,
+`markdown` and `txt`. There is no binary or verbatim format — it is a text and structured-data
+filesystem by design.
 
 34 automated checks: the primitives Git depends on (`O_EXCL`, atomic rename, binary round
 trip, truncate/append, `fsync` on file and directory, close-to-open), then Git itself (200-file
