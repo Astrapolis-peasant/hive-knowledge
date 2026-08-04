@@ -1,0 +1,14 @@
+{
+  "name": "hive-knowledge",
+  "displayName": "Hive Knowledge",
+  "version": "0.1.0",
+  "description": "Query and maintain a hive-knowledge base — a git-published LLM wiki where reads pin a commit, writes go through task worktrees, and write authority is role x team.",
+  "author": {
+    "name": "Astrapolis-peasant",
+    "url": "https://github.com/Astrapolis-peasant"
+  },
+  "homepage": "https://github.com/Astrapolis-peasant/hive-knowledge",
+  "repository": "https://github.com/Astrapolis-peasant/hive-knowledge",
+  "license": "MIT",
+  "keywords": ["knowledge-base", "wiki", "multi-agent", "git", "permissions", "rag"]
+}

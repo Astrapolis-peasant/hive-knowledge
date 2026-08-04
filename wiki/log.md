@@ -11,3 +11,4 @@ Format — four pipe-separated fields, checked by `checks/validate --only log`:
 ```
 
 - 2026-08-04 | task:t20260804-000001 | human.admin | Seeded the knowledge base: scaffold, role and team permission model, deterministic checks, and ten pages covering the four foundations.
+- 2026-08-04 | task:t20260804-000002 | human.admin | Packaged the Claude Code plugin (kb skill, /kb-query, /kb-task) and added the TigerFS deployment path: ops/tigerfs.md, the Phase 0 compatibility gate at 34/34 on local disk, and .env.example.
