@@ -1,0 +1,17 @@
+# Task worktrees. Git manages them; they are not content.
+.worktrees/
+
+# Content-addressed raw store. Immutable evidence, deliberately outside the Git tree
+# (see wiki/concepts/content-addressed-store.md). In production this is the kb-raw
+# TigerFS workspace, not a local directory.
+.raw/
+
+# Task records and leases. In production this is the kb-control workspace.
+.kb/
+
+# Derived retrieval projections. Disposable, always rebuildable, keyed by commit SHA.
+.derived/
+
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+# kb — the only interface an agent needs to this knowledge base.
+#
+#   kb whoami                         who am I, what may I write
+#   kb task start <slug>              branch + worktree + pinned base commit
+#   kb task submit                    validate and queue for release
+#   kb task list                      open tasks and leases
+#   kb new-page <type> <slug> <summary>
+#   kb ingest --file <path> --title <t> --type <web|paper|repo|conversation|note> [--url <u>]
+#   kb validate [--strict] [--only ...]
+#   kb reindex [--check]
+#   kb pin                            resolve and print the current main commit
+#   kb show <commit> <path>           read a file from a pinned commit
+#   kb grep <commit> <pattern>        lexical search inside a pinned commit
+#   kb release <branch>               release role only; compare-and-swap main
+#   kb install-hooks                  enforce validation at commit time
+#
+# Environment (all optional; defaults keep everything inside this repo):
+#   KB_ACTOR      actor id from governance/roles.yaml         (required to write)
+#   KB_GIT_DIR    git dir                                     (default: this repo)
+#   KB_WORKTREES  where task worktrees live                   (default: .worktrees/)
+#   KB_RAW        content-addressed raw store                 (default: .raw/)
+#   KB_CONTROL    task and lease records                      (default: .kb/)
+#   KB_LEASE_MIN  lease minutes for a new task                (default: 120)
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GIT_DIR_ARG=()
+if [ -n "${KB_GIT_DIR:-}" ]; then GIT_DIR_ARG=(--git-dir "$KB_GIT_DIR"); fi
+LEASE_MIN="${KB_LEASE_MIN:-120}"
+PY="${PYTHON:-python3}"
+
+# bash 3.2 (macOS) errors on empty-array expansion under `set -u`; the +… form is required.
+g() { git ${GIT_DIR_ARG[@]+"${GIT_DIR_ARG[@]}"} -C "$ROOT" "$@"; }
+
+# The raw store, task records, and worktree list are shared across all worktrees, so they
+# hang off the main repository — not off ROOT, which is the current worktree when an agent
+# runs kb from inside its task checkout.
+main_root() {
+  local cdir
+  cdir="$(g rev-parse --git-common-dir 2>/dev/null || true)"
+  [ -n "$cdir" ] || { printf '%s' "$ROOT"; return; }
+  case "$cdir" in /*) : ;; *) cdir="$ROOT/$cdir" ;; esac
+  (cd "$cdir/.." 2>/dev/null && pwd) || printf '%s' "$ROOT"
+}
+MAIN_ROOT="$(main_root)"
+WORKTREES="${KB_WORKTREES:-$MAIN_ROOT/.worktrees}"
+RAW="${KB_RAW:-$MAIN_ROOT/.raw}"
+CONTROL="${KB_CONTROL:-$MAIN_ROOT/.kb}"
+die() { printf 'kb: %s\n' "$*" >&2; exit 1; }
+today() { date -u +%Y-%m-%d; }
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# gov <file> <key> -> the value, or one list item per line
+gov() {
+  "$PY" -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from kbcore import load_governance
+data = load_governance(sys.argv[2])
+val = data.get(sys.argv[3])
+for item in (val if isinstance(val, list) else [] if val is None else [val]):
+    print(item)
+' "$ROOT/checks" "$1" "$2"
+}
+
+actor() {
+  [ -n "${KB_ACTOR:-}" ] || die "KB_ACTOR is unset. Reader mode cannot write. See AGENTS.md."
+  printf '%s' "$KB_ACTOR"
+}
+
+role_of() { gov roles.yaml "actor.$(actor).role" | head -1; }
+teams_of() { gov roles.yaml "actor.$(actor).teams"; }
+
+# ---------------------------------------------------------------------- whoami
+
+cmd_whoami() {
+  local a role
+  a="${KB_ACTOR:-<unset>}"
+  if [ "$a" = "<unset>" ]; then
+    echo "actor    <unset> — reader mode, no writes permitted"
+    echo "set KB_ACTOR to an actor id from governance/roles.yaml"
+    return 0
+  fi
+  role="$(role_of)"
+  [ -n "$role" ] || die "actor $a is not registered in governance/roles.yaml"
+  echo "actor    $a"
+  echo "role     $role"
+  echo "teams    $(teams_of | paste -sd, -)"
+  echo "writable"
+  gov roles.yaml "role.$role.write" | sed 's/^/  /'
+  echo "branches"
+  gov roles.yaml "role.$role.branches" | sed 's/^/  /'
+  echo "owned wiki paths"
+  local t
+  for t in $(teams_of); do gov owners.yaml "$t.paths" | sed 's/^/  /'; done
+  echo "note     $(gov roles.yaml "role.$role.notes" | head -1)"
+}
+
+# ------------------------------------------------------------------------ task
+
+cmd_task() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    start) task_start "$@" ;;
+    submit) task_submit "$@" ;;
+    list) task_list "$@" ;;
+    *) die "usage: kb task {start|submit|list}" ;;
+  esac
+}
+
+task_start() {
+  local slug="${1:-}"
+  [ -n "$slug" ] || die "usage: kb task start <slug>"
+  local a role prefix task_id branch wt base
+  a="$(actor)"; role="$(role_of)"
+  [ -n "$role" ] || die "actor $a is not registered in governance/roles.yaml"
+  case "$role" in
+    lint) prefix="lint" ;;
+    reader) die "role reader may not start a write task" ;;
+    release) prefix="admin" ;;
+    *) prefix="agent/${a}" ;;
+  esac
+  task_id="t$(date -u +%Y%m%d-%H%M%S)"
+  branch="${prefix}/${task_id}-${slug}"
+  wt="$WORKTREES/${task_id}-${slug}"
+  base="$(g rev-parse refs/heads/main 2>/dev/null || true)"
+  [ -n "$base" ] || die "no main branch yet — run 'kb init' first"
+
+  mkdir -p "$WORKTREES" "$CONTROL/queue" "$CONTROL/leases"
+  g worktree add -b "$branch" "$wt" "$base" >/dev/null
+  cat >"$CONTROL/queue/$task_id.yaml" <<EOF
+id: $task_id
+actor: $a
+role: $role
+branch: $branch
+worktree: $wt
+base_commit: $base
+status: open
+review_required: false
+opened_at: $(now)
+lease_expires_at: $(date -u -v+"${LEASE_MIN}"M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+  || date -u -d "+${LEASE_MIN} minutes" +%Y-%m-%dT%H:%M:%SZ)
+EOF
+  echo "task     $task_id"
+  echo "branch   $branch"
+  echo "base     $base"
+  echo "worktree $wt"
+  echo "lease    ${LEASE_MIN}m — extend or close it before it expires"
+  echo
+  echo "cd $wt   # work only here"
+}
+
+current_task() {
+  local branch rec
+  branch="$(g rev-parse --abbrev-ref HEAD)"
+  for rec in "$CONTROL"/queue/*.yaml; do
+    [ -f "$rec" ] || continue
+    if grep -qx "branch: $branch" "$rec"; then printf '%s' "$rec"; return 0; fi
+  done
+  return 1
+}
+
+task_submit() {
+  local rec branch
+  branch="$(git -C . rev-parse --abbrev-ref HEAD)"
+  [ "$branch" != "main" ] || die "you are on main — nothing to submit"
+  "$ROOT/checks/validate" || die "validation failed; fix it before submitting"
+  "$ROOT/checks/validate-permissions" || die "permission check failed; split the change"
+  if ! g diff --quiet HEAD 2>/dev/null; then
+    die "uncommitted changes — commit them before submitting"
+  fi
+  if rec="$(current_task)"; then
+    mkdir -p "$CONTROL/submitted"
+    sed 's/^status: open$/status: submitted/' "$rec" >"$CONTROL/submitted/$(basename "$rec")"
+    rm -f "$rec"
+    echo "submitted $(basename "$rec" .yaml) on $branch"
+  else
+    echo "submitted $branch (no task record found; recording as ad hoc)"
+  fi
+  echo "release:  KB_ACTOR=svc.release bin/kb release $branch"
+}
+
+task_list() {
+  local rec
+  echo "open tasks"
+  for rec in "$CONTROL"/queue/*.yaml; do
+    [ -f "$rec" ] || { echo "  (none)"; break; }
+    printf '  %s  %s  %s\n' \
+      "$(grep '^id:' "$rec" | cut -d' ' -f2)" \
+      "$(grep '^actor:' "$rec" | cut -d' ' -f2)" \
+      "$(grep '^branch:' "$rec" | cut -d' ' -f2)"
+  done
+  echo "submitted"
+  for rec in "$CONTROL"/submitted/*.yaml; do
+    [ -f "$rec" ] || { echo "  (none)"; break; }
+    printf '  %s  %s\n' "$(grep '^id:' "$rec" | cut -d' ' -f2)" \
+      "$(grep '^branch:' "$rec" | cut -d' ' -f2)"
+  done
+}
+
+# -------------------------------------------------------------------- authoring
+
+cmd_new_page() {
+  local ptype="${1:-}" slug="${2:-}" summary="${3:-}"
+  [ -n "$ptype" ] && [ -n "$slug" ] && [ -n "$summary" ] \
+    || die "usage: kb new-page <concept|entity|topic|claim|question|synthesis> <slug> <summary>"
+  local owner
+  owner="$(teams_of | head -1)"
+  [ -n "$owner" ] || die "actor $(actor) belongs to no team"
+  "$PY" -c '
+import sys, datetime
+sys.path.insert(0, sys.argv[1])
+from kbcore import DIR_FOR_TYPE, PAGE_TYPES, ROOT
+ptype, slug, summary, owner = sys.argv[2:6]
+if ptype not in PAGE_TYPES:
+    sys.exit(f"kb: page type {ptype!r} not in {PAGE_TYPES}")
+tpl = (ROOT / "templates" / "wiki-page.md").read_text()
+title = slug.replace("-", " ").title()
+out = (tpl.replace("{{ID}}", f"{ptype}.{slug}")
+          .replace("{{PAGE_TYPE}}", ptype)
+          .replace("{{OWNER}}", owner)
+          .replace("{{SUMMARY}}", summary)
+          .replace("{{DATE}}", datetime.date.today().isoformat())
+          .replace("{{TITLE}}", title))
+dest = ROOT / "wiki" / DIR_FOR_TYPE[ptype] / f"{slug}.md"
+if dest.exists():
+    sys.exit(f"kb: {dest} already exists")
+dest.write_text(out)
+print(dest.relative_to(ROOT))
+' "$ROOT/checks" "$ptype" "$slug" "$summary" "$owner"
+  echo "next: fix the H1 casing if needed, fill in the sections, cite sources,"
+  echo "      then 'kb reindex && kb validate'"
+}
+
+cmd_ingest() {
+  local file="" title="" stype="" url="null"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --file) file="${2:-}"; shift 2 ;;
+      --title) title="${2:-}"; shift 2 ;;
+      --type) stype="${2:-}"; shift 2 ;;
+      --url) url="${2:-}"; shift 2 ;;
+      *) die "unknown flag $1" ;;
+    esac
+  done
+  [ -n "$file" ] && [ -n "$title" ] && [ -n "$stype" ] \
+    || die "usage: kb ingest --file <path> --title <t> --type <web|paper|repo|conversation|note> [--url <u>]"
+  [ -f "$file" ] || die "no such file: $file"
+  local role; role="$(role_of)"
+  case "$role" in
+    ingest|admin) : ;;
+    *) die "role $role may not write the raw store (need ingest or admin)" ;;
+  esac
+
+  local sha dest mt id
+  sha="$("$PY" -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$file")"
+  dest="$RAW/sha256/${sha:0:2}/${sha:2:2}/$sha"
+  if [ -f "$dest" ]; then
+    echo "raw      already stored (create-only store, identical bytes) $sha"
+  else
+    mkdir -p "$(dirname "$dest")"
+    cp "$file" "$dest"
+    chmod 0444 "$dest"
+    echo "raw      stored $sha"
+  fi
+  mt="$(file --mime-type -b "$file" 2>/dev/null || echo application/octet-stream)"
+  id="source.$(printf '%s' "$title" | tr '[:upper:] ' '[:lower:]-' \
+      | tr -cd 'a-z0-9-' | cut -c1-48)"
+  local man="$ROOT/sources/manifests/$id.yaml"
+  [ ! -f "$man" ] || die "manifest $id.yaml already exists — pick a distinct title"
+  cat >"$man" <<EOF
+id: $id
+title: $title
+source_type: $stype
+status: active
+captured_at: $(now)
+original_url: $url
+raw_uri: kbraw://sha256/${sha:0:2}/${sha:2:2}/$sha
+sha256: $sha
+media_type: $mt
+bytes: $(wc -c <"$file" | tr -d ' ')
+EOF
+  echo "manifest sources/manifests/$id.yaml"
+  echo "next: cite $id from the pages you update, then 'kb reindex && kb validate'"
+}
+
+# ------------------------------------------------------------------------ read
+
+cmd_pin() { g rev-parse refs/heads/main; }
+
+cmd_show() {
+  local commit="${1:-}" path="${2:-}"
+  [ -n "$commit" ] && [ -n "$path" ] || die "usage: kb show <commit> <path>"
+  g show "$commit:$path"
+}
+
+cmd_grep() {
+  local commit="${1:-}"; shift || die "usage: kb grep <commit> <pattern>"
+  [ $# -gt 0 ] || die "usage: kb grep <commit> <pattern>"
+  g grep -n -i "$@" "$commit" -- wiki/ sources/ || true
+}
+
+# --------------------------------------------------------------------- release
+
+cmd_release() {
+  local branch="${1:-}"
+  [ -n "$branch" ] || die "usage: kb release <branch>"
+  [ "$(role_of)" = "release" ] || die "only the release role may advance main"
+  local old wt new
+  g rev-parse --verify --quiet "refs/heads/$branch" >/dev/null \
+    || die "no such branch: $branch (list them with: git branch --list)"
+  old="$(g rev-parse refs/heads/main)"
+  wt="$WORKTREES/release"
+  if [ ! -d "$wt" ]; then
+    mkdir -p "$WORKTREES"
+    g worktree add --detach "$wt" "$old" >/dev/null
+  fi
+  git -C "$wt" checkout --detach "$old" >/dev/null 2>&1
+  # merge on a detached HEAD so refs/heads/main can be advanced by compare-and-swap
+  if ! git -C "$wt" merge --no-ff -m "release: merge $branch" "refs/heads/$branch"; then
+    if [ -f "$(git -C "$wt" rev-parse --git-path MERGE_HEAD)" ]; then
+      git -C "$wt" merge --abort
+      die "merge conflict on $branch — a human must reconcile the conflicting conclusions"
+    fi
+    die "merge of $branch failed before conflict resolution (see the git error above)"
+  fi
+  ( cd "$wt" && "$wt/checks/validate" ) || {
+    git -C "$wt" checkout --detach "$old" >/dev/null 2>&1
+    die "validation failed on the merge result; main is unchanged"
+  }
+  new="$(git -C "$wt" rev-parse HEAD)"
+  g update-ref refs/heads/main "$new" "$old" \
+    || die "main moved from $old while releasing — re-run; nothing was published"
+  echo "published $new (was $old)"
+  echo "branch    $branch merged"
+  echo "reminder  append the accepted change to wiki/log.md on the next task"
+}
+
+# ----------------------------------------------------------------------- setup
+
+cmd_init() {
+  if [ ! -d "$ROOT/.git" ] && [ -z "${KB_GIT_DIR:-}" ]; then
+    git -C "$ROOT" init -q -b main
+    echo "initialized git repository on main"
+  fi
+  mkdir -p "$RAW/sha256" "$CONTROL/queue" "$CONTROL/leases" "$CONTROL/submitted" "$WORKTREES"
+  cmd_install_hooks
+  echo "ready. next: git add -A && git commit -m 'kb: initial knowledge base'"
+}
+
+cmd_install_hooks() {
+  local hooks
+  hooks="$(g rev-parse --git-path hooks)"
+  hooks="$ROOT/$hooks"
+  mkdir -p "$hooks"
+  cat >"$hooks/pre-commit" <<'EOF'
+#!/usr/bin/env bash
+# installed by bin/kb install-hooks — layer 2 of the permission model.
+# Refuses anonymous commits, runs the deterministic checks, then checks role and team scope.
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+HAS_HEAD="$(git rev-parse -q --verify HEAD || true)"
+if [ -z "${KB_ACTOR:-}" ]; then
+  if [ -n "$HAS_HEAD" ]; then
+    echo "pre-commit: KB_ACTOR is unset — export an actor id from governance/roles.yaml" >&2
+    echo "pre-commit: an unattributed commit cannot be permission-checked or audited." >&2
+    exit 1
+  fi
+  echo "pre-commit: bootstrap commit with no actor; permission check skipped" >&2
+fi
+"$ROOT/checks/validate" || exit 1
+[ -z "${KB_ACTOR:-}" ] || "$ROOT/checks/validate-permissions" || exit 1
+EOF
+  chmod +x "$hooks/pre-commit"
+  echo "installed $hooks/pre-commit"
+}
+
+# ------------------------------------------------------------------------ main
+
+case "${1:-}" in
+  whoami) shift; cmd_whoami "$@" ;;
+  task) shift; cmd_task "$@" ;;
+  new-page) shift; cmd_new_page "$@" ;;
+  ingest) shift; cmd_ingest "$@" ;;
+  validate) shift; exec "$ROOT/checks/validate" "$@" ;;
+  reindex) shift; exec "$ROOT/checks/reindex" "$@" ;;
+  permissions) shift; exec "$ROOT/checks/validate-permissions" "$@" ;;
+  pin) shift; cmd_pin "$@" ;;
+  show) shift; cmd_show "$@" ;;
+  grep) shift; cmd_grep "$@" ;;
+  release) shift; cmd_release "$@" ;;
+  init) shift; cmd_init "$@" ;;
+  install-hooks) shift; cmd_install_hooks "$@" ;;
+  ""|-h|--help|help) sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command '$1' — run 'kb help'" ;;
+esac

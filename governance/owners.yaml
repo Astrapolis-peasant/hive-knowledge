@@ -1,0 +1,36 @@
+# Team ownership of knowledge areas.
+# Two independent uses:
+#   1. path globs  -> which team may write which files (enforced by validate-permissions)
+#   2. page `owner` -> which team is accountable for a page's content (enforced by validate)
+# YAML subset only: flat scalars and lists of scalars.
+
+teams:
+  - team.platform
+  - team.knowledge
+
+team.platform.description: Owns infrastructure knowledge — storage, git, database, runtime.
+team.platform.paths:
+  - wiki/entities/tigerfs.md
+  - wiki/entities/postgresql.md
+  - wiki/entities/git.md
+  - wiki/concepts/commit-pinned-read.md
+  - wiki/concepts/content-addressed-store.md
+  - wiki/claims/**
+  - wiki/topics/knowledge-base-foundations.md
+
+team.knowledge.description: Owns the knowledge model — page taxonomy, synthesis, retrieval.
+team.knowledge.paths:
+  - wiki/concepts/llm-wiki.md
+  - wiki/concepts/**
+  - wiki/topics/**
+  - wiki/questions/**
+  - wiki/syntheses/**
+  - wiki/entities/**
+  - sources/**
+  - wiki/index.md
+  - wiki/log.md
+
+# Unowned paths are writable by any team whose role grants them, but a page whose
+# `owner:` names a team that does not list a matching path fails validation.
+# Overlap is allowed and intentional: the first matching team is not special, any
+# owning team may write. Narrow the globs when a boundary starts to matter.

@@ -1,0 +1,100 @@
+# Roles: capability grants for agents and humans.
+# Read by checks/validate-permissions and bin/kb whoami.
+# YAML subset only: flat scalars and lists of scalars (see AGENTS.md section 4).
+#
+# write globs are gitignore-style path patterns evaluated against `git diff --name-only`.
+# An actor may write a path only if it matches one of their role's write globs AND
+# (for wiki paths) their team owns it per owners.yaml.
+
+roles:
+  - reader
+  - ingest
+  - compile
+  - lint
+  - release
+  - admin
+
+# --- capability grants -------------------------------------------------------
+
+role.reader.write: []
+role.reader.branches: []
+role.reader.notes: Query only. Reads a pinned commit. No worktree needed.
+
+role.ingest.write:
+  - sources/manifests/*.yaml
+  - sources/index.md
+  - wiki/log.md
+role.ingest.branches:
+  - agent/**
+role.ingest.raw: create-only
+role.ingest.notes: Registers sources and captures immutable bytes. Does not synthesize.
+
+role.compile.write:
+  - wiki/**
+role.compile.branches:
+  - agent/**
+role.compile.raw: none
+role.compile.notes: Authors and reconciles pages. Constrained further by owners.yaml.
+
+role.lint.write:
+  - wiki/**
+  - reports/*.md
+role.lint.branches:
+  - lint/**
+  - repair/**
+role.lint.raw: none
+role.lint.notes: Reports findings. Semantic fixes go to a repair branch for review.
+
+role.release.write:
+  - wiki/log.md
+role.release.branches:
+  - main
+role.release.raw: none
+role.release.ref_update: refs/heads/main
+role.release.notes: The only role permitted to advance main. Validates, merges, publishes.
+
+role.admin.write:
+  - '**'
+role.admin.branches:
+  - agent/**
+  - admin/**
+role.admin.raw: none
+role.admin.notes: Break-glass. Full write authority, still cannot publish main. Use rarely; every use is in the git log.
+
+# --- actors ------------------------------------------------------------------
+# One entry per agent or human. actor.<id>.role and actor.<id>.teams are required.
+# Add actors here; the permission check refuses unknown actors.
+
+actors:
+  - human.admin
+  - agent.ingest-01
+  - agent.compile-01
+  - agent.compile-02
+  - agent.lint-01
+  - svc.release
+
+actor.human.admin.role: admin
+actor.human.admin.teams:
+  - team.platform
+  - team.knowledge
+
+actor.agent.ingest-01.role: ingest
+actor.agent.ingest-01.teams:
+  - team.knowledge
+
+actor.agent.compile-01.role: compile
+actor.agent.compile-01.teams:
+  - team.platform
+
+actor.agent.compile-02.role: compile
+actor.agent.compile-02.teams:
+  - team.knowledge
+
+actor.agent.lint-01.role: lint
+actor.agent.lint-01.teams:
+  - team.knowledge
+
+actor.svc.release.role: release
+actor.svc.release.teams:
+  - team.platform
+  - team.knowledge

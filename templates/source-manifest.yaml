@@ -1,0 +1,13 @@
+// This file is a template, not a valid manifest. Copy it, drop this line, fill it in.
+// Prefer `bin/kb ingest`, which computes the hash and writes the manifest for you.
+id: source.<stable-slug>
+title: <human title>
+source_type: web            # web | paper | repo | conversation | note
+status: active              # active (bytes captured) | reference-only | deprecated
+captured_at: 2026-08-04T00:00:00Z
+original_url: https://example.com/thing
+raw_uri: kbraw://sha256/ab/cd/<full-sha256>   # required when status is active
+sha256: <64 lowercase hex chars>              # required when status is active
+media_type: text/markdown
+bytes: 0
+notes: null

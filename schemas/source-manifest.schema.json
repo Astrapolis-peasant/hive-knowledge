@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/kb/source-manifest.schema.json",
+  "title": "Source manifest",
+  "description": "Metadata and citation identity for one raw source. The manifest is versioned in Git because our reading of a source improves; the bytes it points at are immutable. Enforcing implementation is checks/kb.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "source_type", "status", "captured_at"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^source\\.[a-z0-9][a-z0-9-]*$",
+      "description": "Stable citation identity, matching the filename. Wiki pages cite this, never a hash."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "source_type": {
+      "enum": ["web", "paper", "repo", "conversation", "note"]
+    },
+    "status": {
+      "enum": ["active", "reference-only", "deprecated"],
+      "description": "active means the bytes are captured and hashed; reference-only means we have pointed at it but not stored it, which caps citing pages below high confidence."
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "original_url": {
+      "type": ["string", "null"]
+    },
+    "raw_uri": {
+      "type": ["string", "null"],
+      "description": "Location in the content-addressed raw store. Required when status is active."
+    },
+    "sha256": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the raw bytes. Required when status is active. Verified against the stored object whenever the raw store is reachable; a mismatch means the create-only store was mutated."
+    },
+    "media_type": { "type": ["string", "null"] },
+    "bytes": { "type": ["integer", "null"], "minimum": 0 },
+    "license": { "type": ["string", "null"] },
+    "notes": { "type": ["string", "null"], "description": "One line. The YAML subset has no multi-line strings." }
+  },
+  "x-immutability": {
+    "description": "Raw objects are create-only. Enforced by REVOKE UPDATE, DELETE plus a trigger in db/schema.sql, not by instructions to agents. Content-addressing makes the invariant auditable."
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/kb/wiki-page.schema.json",
+  "title": "Wiki page frontmatter",
+  "description": "Documentation and editor support for wiki page frontmatter. The enforcing implementation is checks/kb.py (stdlib only, no jsonschema dependency); if the two ever disagree, checks/kb.py wins and this file is the bug.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "page_type", "status", "owner", "visibility", "confidence", "summary", "updated_at", "sources"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^(concept|entity|topic|claim|question|synthesis)\\.[a-z0-9][a-z0-9-]*$",
+      "description": "Stable identity: <page_type>.<slug>, matching the filename. Never changes, even if the page moves."
+    },
+    "page_type": {
+      "enum": ["concept", "entity", "topic", "claim", "question", "synthesis"],
+      "description": "Determines the directory: concepts/, entities/, topics/, claims/, questions/, syntheses/."
+    },
+    "status": {
+      "enum": ["draft", "active", "superseded", "deprecated"]
+    },
+    "owner": {
+      "type": "string",
+      "pattern": "^team\\.[a-z0-9-]+$",
+      "description": "Accountable team, declared in governance/owners.yaml, which must also claim this page's path."
+    },
+    "visibility": {
+      "enum": ["public", "internal", "restricted"],
+      "description": "Read control. Advisory in the Git layer; enforce restricted content with a separate workspace credential or RLS."
+    },
+    "confidence": {
+      "enum": ["high", "medium", "low"],
+      "description": "high requires at least one cited source with status active (captured bytes)."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "description": "One line. Rendered into wiki/index.md, so it must be scannable on its own."
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "sources": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^source\\.[a-z0-9][a-z0-9-]*$" },
+      "description": "Source ids with a manifest in sources/manifests/. May be empty only for question pages and drafts."
+    },
+    "related": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Page ids. Must resolve; must not include this page."
+    },
+    "supersedes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Page ids this page replaces. Those pages should carry status superseded."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "review_required": {
+      "type": "boolean",
+      "description": "Set when the change touches a path the authoring agent's team does not own."
+    }
+  },
+  "x-body-sections": {
+    "description": "The body must open with an H1 and contain these level-2 sections, in this order. Write 'None known.' rather than dropping a section.",
+    "required": ["Definition", "Current Understanding", "Disputed or Uncertain", "Evidence"]
+  },
+  "x-yaml-subset": {
+    "description": "Frontmatter is parsed by a stdlib-only YAML subset parser: flat 'key: value', 'key:' followed by '  - item' lists, '[]', and '#' comments. No nested maps, multi-line strings, or anchors."
+  }
+}

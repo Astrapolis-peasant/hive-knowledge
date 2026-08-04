@@ -1,0 +1,10 @@
+id: source.karpathy-llm-wiki
+title: LLM Wiki (Andrej Karpathy)
+source_type: web
+status: reference-only
+captured_at: 2026-08-04T06:00:00Z
+original_url: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
+raw_uri: null
+sha256: null
+media_type: text/markdown
+notes: Bytes not captured; cited pages stay at medium confidence until ingest promotes this to active.
