@@ -54,11 +54,15 @@ metadata, not as access enforcement, unless you have verified that it actually d
 
 ## Disputed or Uncertain
 
-The whole design rests on TigerFS implementing the filesystem primitives Git relies on —
-exclusive lockfile creation, atomic rename, close-to-open visibility, correct binary round
-trips, `fsync` semantics. TigerFS publishes no formal Git compatibility guarantee, and we
-have not run the gate ourselves. This is tracked as [[claim.git-on-tigerfs-unverified]] and
-is the single largest risk in the stack.
+The design originally rested on TigerFS implementing the filesystem primitives Git relies on.
+**As of 2026-08-04 it does not, on macOS.** The gate was run and Git failed 23 of 34 checks,
+including atomic rename, close-to-open visibility, and `git fsck` integrity — see
+[[claim.git-on-tigerfs-fails-the-gate]]. The Git repository therefore lives on local disk, and
+TigerFS keeps the raw and control stores, which were measured working: bytes round-trip
+byte-exact through `tigerfs.kb_raw` and hash-verify against their manifests.
+
+Still open for TigerFS itself: the Linux/FUSE backend is untested (macOS uses NFS loopback),
+workspace creation needs `uuidv7()` from PostgreSQL 18+, and `history` needs TimescaleDB.
 
 Confidence on this page is medium, not high: the source bytes for the TigerFS specification
 have not been captured, and the project is under active development.
