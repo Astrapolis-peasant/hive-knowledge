@@ -123,10 +123,18 @@ Append one line to `wiki/log.md` per accepted change. It is the chronological re
 
 ```bash
 COMMIT=$(bin/kb pin)                    # resolve main once, pin it for the whole request
-bin/kb show "$COMMIT" wiki/index.md     # catalog first
-bin/kb grep "$COMMIT" "kv cache"        # exact lexical discovery
-bin/kb show "$COMMIT" wiki/concepts/kv-cache.md
+bin/kb ask "why do queries pin a commit"    # ranked candidates — start here
+bin/kb show "$COMMIT" wiki/concepts/commit-pinned-read.md   # read the WHOLE page
+bin/kb links concept.commit-pinned-read     # what points here, what it cites
 ```
+
+`kb ask` ranks pages by BM25 over id, title, summary, headings, and body, then weights the
+score by `status` and `confidence` — a superseded page is a worse answer than an active one
+even when it matches better. Filters (`--type`, `--owner`, `--min-confidence`, `--status`)
+apply *before* ranking, which is the cheapest way to cut context noise.
+
+Reach for `bin/kb grep "$COMMIT" "<exact string>"` when you need an exact string rather than a
+topic — an error message, a flag name, an id.
 
 Rules:
 
@@ -134,6 +142,9 @@ Rules:
 - Search returns candidate *page identities*. Read the whole page before using it.
 - Cite page ids and source ids. Say when the wiki does not know.
 - Reading is not writing. If the answer produces a durable synthesis, open a normal task.
+- **If retrieval fails on something the wiki should know, record it:** `bin/kb miss "<query>"`.
+  That is the only evidence that would justify building heavier retrieval, and nobody else is
+  collecting it. `bin/kb stats` shows what has accumulated.
 
 ## 8. Do not
 

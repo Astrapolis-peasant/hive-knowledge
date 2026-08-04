@@ -25,11 +25,16 @@ from memory and present it as what the knowledge base says.
 ## 2. Read path (default — use this unless asked to write)
 
 ```bash
-COMMIT=$(bin/kb pin)                                   # pin ONE commit for the whole request
-bin/kb show "$COMMIT" wiki/index.md                    # catalog: id, summary, owner, confidence
-bin/kb grep "$COMMIT" "<term>"                         # exact lexical search
-bin/kb show "$COMMIT" wiki/concepts/<slug>.md          # read the WHOLE page
+COMMIT=$(bin/kb pin)                       # pin ONE commit for the whole request
+bin/kb ask "<the user's question>"          # ranked candidates — start here
+bin/kb show "$COMMIT" wiki/concepts/<slug>.md   # read the WHOLE page
+bin/kb links <page-id>                     # inbound/outbound links and cited evidence
+bin/kb grep "$COMMIT" "<exact string>"      # only when you need an exact string
 ```
+
+`ask` ranks by relevance and then discounts untrustworthy pages (`superseded`, `draft`, low
+confidence), so the ordering already encodes what is safe to answer from. Narrow before
+ranking with `--type`, `--owner`, `--min-confidence`, `--status`.
 
 Rules that change your answer:
 
@@ -39,6 +44,8 @@ Rules that change your answer:
   `## Disputed or Uncertain`, means hedge and say why — do not launder it into a clean answer.
 - **Cite page ids and source ids** (`concept.kv-cache`, `source.tigerfs-spec`).
 - **Say when it does not know.** A gap is a real answer. Offer to open a `question.*` page.
+- **Record retrieval failures**: `bin/kb miss "<query>"` when the wiki should have had an answer
+  and `ask` did not surface it. This is measured evidence, not bookkeeping.
 - **Reading never writes.** If the user wants the finding kept, switch to the write path.
 
 ## 3. Write path
