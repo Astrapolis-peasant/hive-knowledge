@@ -55,7 +55,11 @@ checks/                  deterministic validators (stdlib only)
 schemas/                 JSON Schema, for editors and humans
 templates/               page and manifest skeletons
 db/schema.sql            PostgreSQL roles, raw immutability, task leases
+ops/
+  tigerfs.md             deploying onto PostgreSQL + TigerFS
+  gate-git-on-tigerfs    Phase 0 compatibility gate — run before trusting a mount
 bin/kb                   the only CLI an agent needs
+plugins/hive-knowledge/  the Claude Code plugin (skill + slash commands)
 ```
 
 Not in Git, and deliberately: `.raw/` (immutable source bytes, content-addressed),
@@ -79,13 +83,50 @@ Two invariants have no exceptions: **only the release role advances `main`** (co
 on the ref), and **raw source bytes are create-only** (revoked grants plus a trigger, with
 content-addressing making the invariant auditable).
 
+## Use it from another project
+
+This repo is also a Claude Code plugin marketplace, so agents working in other codebases can
+query and update the knowledge base:
+
+```
+/plugin marketplace add Astrapolis-peasant/hive-knowledge
+/plugin install hive-knowledge@hive-knowledge
+```
+
+That adds a `kb` skill (Claude invokes it when a question looks like something the knowledge
+base covers) plus `/kb-query <question>` and `/kb-task <what to record>`. Point it at your
+clone with `export KB_HOME=/path/to/hive-knowledge`.
+
+The plugin is the interface, not the data — it carries no wiki content. Permission control
+stays with `KB_ACTOR` and the checks in the clone; a skill can guide an agent but cannot grant
+it anything.
+
+## Deploying on PostgreSQL + TigerFS
+
+[ops/tigerfs.md](ops/tigerfs.md) is the deployment path: schema, roles, workspaces, mount, and
+the env vars that point `bin/kb` at them (`.env.example`). Step 3 is a gate, not a formality:
+
+```bash
+mkdir -p /tmp/gate-control && ops/gate-git-on-tigerfs /tmp/gate-control   # control
+ops/gate-git-on-tigerfs /mnt/ai-kb/kb-git                                 # the real thing
+```
+
+34 automated checks — the primitives Git depends on, then Git itself, then worktrees,
+concurrency, and `fsck` after everything destructive — plus six manual tests it prints and
+cannot perform for you.
+
 ## Status
 
 The scaffold, checks, permission model, and seed wiki work today on a local filesystem —
 `bin/kb validate` passes with zero warnings.
 
-Not yet done, in order: the Git-on-TigerFS compatibility gate
-([claim.git-on-tigerfs-unverified](wiki/claims/git-on-tigerfs-unverified.md), Phase 0 of the
-architecture doc and a genuine blocker for production), then PostgreSQL deployment with
-`db/schema.sql`, then retrieval measurement
-([question.retrieval-scale-threshold](wiki/questions/retrieval-scale-threshold.md)).
+The compatibility gate is written and passes 34/34 on local disk, which makes it a trustworthy
+control — but **it has never been run against TigerFS**, because nothing here has been deployed
+on it yet. Until it is, treat
+[claim.git-on-tigerfs-unverified](wiki/claims/git-on-tigerfs-unverified.md) as the open blocker
+for production it says it is.
+
+Then, in order: PostgreSQL deployment with `db/schema.sql` and per-agent roles, the six manual
+gate tests (cross-host visibility, crash injection, restore drill), and retrieval measurement
+([question.retrieval-scale-threshold](wiki/questions/retrieval-scale-threshold.md)) before any
+index gets built.

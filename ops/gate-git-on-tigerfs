@@ -1,0 +1,350 @@
+#!/usr/bin/env bash
+# Phase 0 compatibility gate: does Git behave correctly on this filesystem?
+#
+#   ops/gate-git-on-tigerfs <directory-under-test> [--keep]
+#
+# Run it against a TigerFS mount before trusting this knowledge base to it:
+#   ops/gate-git-on-tigerfs /mnt/ai-kb/kb-git
+#
+# Run it against local disk first as a control — every test must pass there. A test that
+# fails on both is a bug in this script; one that passes locally and fails on the mount is
+# the finding you are looking for.
+#
+# This gate is deliberately filesystem-agnostic: it exercises the primitives Git depends on
+# and then Git itself, and it does not know or care what is underneath. Exit 0 means every
+# automated check passed. It does NOT mean the gate is complete — see MANUAL TESTS at the end,
+# which need a second host or the ability to kill processes mid-write, and which this script
+# cannot honestly perform for you.
+#
+# Reference: AI_Knowledge_Base_Architecture.md section 16, and
+# wiki/claims/git-on-tigerfs-unverified.md.
+set -uo pipefail
+
+TARGET="${1:-}"
+KEEP="${2:-}"
+[ -n "$TARGET" ] || { echo "usage: ops/gate-git-on-tigerfs <directory-under-test> [--keep]" >&2; exit 2; }
+[ -d "$TARGET" ] || { echo "gate: no such directory: $TARGET" >&2; exit 2; }
+
+PY="${PYTHON:-python3}"
+WORK="$TARGET/.gate-$$"
+mkdir -p "$WORK" || { echo "gate: cannot create $WORK" >&2; exit 2; }
+PASS=0; FAIL=0; FAILED_NAMES=""
+
+cleanup() {
+  if [ "$KEEP" = "--keep" ]; then
+    echo "gate: leaving $WORK in place (--keep)"
+  else
+    chmod -R u+w "$WORK" 2>/dev/null
+    rm -rf "$WORK"
+  fi
+}
+trap cleanup EXIT
+
+ok()   { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m  %s\n' "$1"; }
+bad()  { FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES$1
+"; printf '  \033[31mFAIL\033[0m  %s — %s\n' "$1" "${2:-}"; }
+check(){ if [ "$1" = "0" ]; then ok "$2"; else bad "$2" "${3:-command exited $1}"; fi; }
+
+# fsck is the arbiter after anything destructive: Git's own integrity opinion.
+fsck() { git -C "$1" fsck --full --strict >/dev/null 2>&1; }
+
+echo "Git-on-filesystem compatibility gate"
+echo "  target : $TARGET"
+echo "  git    : $(git --version | awk '{print $3}')"
+echo "  python : $($PY -V 2>&1 | awk '{print $2}')"
+echo "  workdir: $WORK"
+echo
+
+# ------------------------------------------------------------------ 1. primitives
+echo "1. filesystem primitives Git relies on"
+
+# Exclusive create is how Git serializes every ref update and index write. If O_EXCL does
+# not actually exclude, concurrent Git processes corrupt refs and the damage is silent.
+$PY - "$WORK" <<'EOF' >/dev/null 2>&1
+import os, sys
+p = os.path.join(sys.argv[1], "excl.lock")
+fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+os.close(fd)
+try:
+    fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    os.close(fd)
+    sys.exit(1)          # second exclusive create succeeded: broken
+except FileExistsError:
+    os.unlink(p)
+    sys.exit(0)
+EOF
+check $? "exclusive create (O_CREAT|O_EXCL) refuses an existing path"
+
+# Atomic rename-over-existing is how a commit, a ref, and the index become visible.
+$PY - "$WORK" <<'EOF' >/dev/null 2>&1
+import os, sys
+d = sys.argv[1]
+old, new = os.path.join(d, "target"), os.path.join(d, "incoming")
+open(old, "w").write("old" * 1000)
+open(new, "w").write("new" * 1000)
+os.rename(new, old)
+if os.path.exists(new):
+    sys.exit(1)                                  # source survived the rename
+if open(old).read() != "new" * 1000:
+    sys.exit(1)                                  # destination not fully replaced
+os.unlink(old)
+sys.exit(0)
+EOF
+check $? "rename() replaces an existing file and removes the source"
+
+# Loose objects and packfiles are binary. A lossy round trip (encoding, newline munging,
+# truncation at a NUL) corrupts the object store in ways only fsck finds.
+$PY - "$WORK" <<'EOF' >/dev/null 2>&1
+import hashlib, os, sys
+p = os.path.join(sys.argv[1], "blob.bin")
+data = bytes(range(256)) * 4096 + b"\x00\r\n\x1a" + os.urandom(65536)
+with open(p, "wb") as fh:
+    fh.write(data)
+back = open(p, "rb").read()
+os.unlink(p)
+sys.exit(0 if hashlib.sha256(back).digest() == hashlib.sha256(data).digest() else 1)
+EOF
+check $? "binary round trip is byte-exact (1MB incl. NUL, CR, LF, 0x1a)"
+
+$PY - "$WORK" <<'EOF' >/dev/null 2>&1
+import os, sys
+p = os.path.join(sys.argv[1], "trunc")
+open(p, "w").write("x" * 5000)
+with open(p, "r+") as fh:
+    fh.truncate(0)
+if os.path.getsize(p) != 0:
+    sys.exit(1)
+with open(p, "a") as fh:
+    fh.write("y" * 100)
+ok = os.path.getsize(p) == 100 and open(p).read() == "y" * 100
+os.unlink(p)
+sys.exit(0 if ok else 1)
+EOF
+check $? "truncate to zero then append reports the right size and content"
+
+$PY - "$WORK" <<'EOF' >/dev/null 2>&1
+import os, sys
+p = os.path.join(sys.argv[1], "fsyncme")
+fd = os.open(p, os.O_CREAT | os.O_WRONLY, 0o644)
+os.write(fd, b"durable" * 1000)
+os.fsync(fd)                    # must not raise; Git calls this before moving refs
+os.close(fd)
+d = os.open(sys.argv[1], os.O_RDONLY)
+try:
+    os.fsync(d)                 # directory fsync: how Git makes a rename durable
+finally:
+    os.close(d)
+os.unlink(p)
+sys.exit(0)
+EOF
+check $? "fsync on a file and on a directory both succeed"
+
+# Close-to-open consistency, single mount. Cross-mount is a MANUAL test.
+$PY - "$WORK" <<'EOF' >/dev/null 2>&1
+import os, subprocess, sys
+p = os.path.join(sys.argv[1], "cto")
+with open(p, "w") as fh:
+    fh.write("visible")
+out = subprocess.run([sys.executable, "-c", f"print(open({p!r}).read())"],
+                     capture_output=True, text=True)
+os.unlink(p)
+sys.exit(0 if out.stdout.strip() == "visible" else 1)
+EOF
+check $? "a closed write is visible to a separate process (same mount)"
+
+# ------------------------------------------------------------------ 2. git core
+echo
+echo "2. git object store and history operations"
+
+R="$WORK/repo"
+git init -q -b main "$R" >/dev/null 2>&1
+git -C "$R" config user.email gate@test.local
+git -C "$R" config user.name "Gate"
+git -C "$R" config commit.gpgsign false
+check $? "git init"
+
+# Many small files is the shape of a wiki commit, and the shape that stresses metadata ops.
+$PY - "$R" <<'EOF' >/dev/null 2>&1
+import os, sys
+d = os.path.join(sys.argv[1], "wiki")
+os.makedirs(d, exist_ok=True)
+for i in range(200):
+    open(os.path.join(d, f"page-{i:04d}.md"), "w").write(f"# page {i}\n" + "body\n" * 20)
+EOF
+git -C "$R" add -A >/dev/null 2>&1 && git -C "$R" commit -qm "200 pages" >/dev/null 2>&1
+check $? "commit 200 files"
+fsck "$R"; check $? "fsck clean after commit"
+
+# A large binary exercises the packfile path rather than the loose-object path.
+$PY -c "
+import os,sys; open(os.path.join(sys.argv[1],'big.bin'),'wb').write(os.urandom(8*1024*1024))
+" "$R" >/dev/null 2>&1
+git -C "$R" add -A >/dev/null 2>&1 && git -C "$R" commit -qm "8MB binary" >/dev/null 2>&1
+check $? "commit an 8MB binary"
+
+BLOB=$(git -C "$R" rev-parse HEAD:big.bin 2>/dev/null)
+git -C "$R" cat-file blob "$BLOB" 2>/dev/null | cmp -s - "$R/big.bin"
+check $? "8MB blob reads back byte-identical from the object store"
+
+git -C "$R" checkout -q -b topic 2>/dev/null
+echo "topic edit" >>"$R/wiki/page-0001.md"
+git -C "$R" commit -qam "topic edit" >/dev/null 2>&1
+git -C "$R" checkout -q main 2>/dev/null
+echo "main edit" >>"$R/wiki/page-0002.md"
+git -C "$R" commit -qam "main edit" >/dev/null 2>&1
+git -C "$R" merge -q --no-ff -m "merge topic" topic >/dev/null 2>&1
+check $? "non-conflicting merge"
+
+git -C "$R" checkout -q -b rebasing HEAD~1 2>/dev/null
+echo "rebase me" >>"$R/wiki/page-0003.md"
+git -C "$R" commit -qam "rebase me" >/dev/null 2>&1
+git -C "$R" rebase -q main >/dev/null 2>&1
+check $? "rebase"
+git -C "$R" checkout -q main 2>/dev/null
+git -C "$R" cherry-pick rebasing >/dev/null 2>&1
+check $? "cherry-pick"
+git -C "$R" revert --no-edit HEAD >/dev/null 2>&1
+check $? "revert"
+fsck "$R"; check $? "fsck clean after merge, rebase, cherry-pick, revert"
+
+# Deliberate conflict: Git must *detect* it, not silently pick a side. A filesystem that
+# breaks this turns two agents' incompatible conclusions into one wrong page.
+git -C "$R" checkout -q -b conflict-a main 2>/dev/null
+printf 'A\n' >"$R/wiki/page-0010.md"; git -C "$R" commit -qam "A" >/dev/null 2>&1
+git -C "$R" checkout -q -b conflict-b main 2>/dev/null
+printf 'B\n' >"$R/wiki/page-0010.md"; git -C "$R" commit -qam "B" >/dev/null 2>&1
+git -C "$R" merge -q conflict-a >/dev/null 2>&1; MRC=$?
+UNMERGED=$(git -C "$R" ls-files -u 2>/dev/null)
+case "$MRC:$UNMERGED" in
+  0:*) bad "conflicting merge is detected and staged as a conflict" "merge reported success on conflicting content";;
+  *page-0010*) ok "conflicting merge is detected and staged as a conflict";;
+  *) bad "conflicting merge is detected and staged as a conflict" "merge failed but staged no conflict";;
+esac
+git -C "$R" merge --abort >/dev/null 2>&1
+git -C "$R" checkout -q main >/dev/null 2>&1
+
+# ------------------------------------------------------------------ 3. worktrees
+echo
+echo "3. linked worktrees (one per agent task)"
+
+git -C "$R" worktree add -q -b wt-1 "$WORK/wt-1" main >/dev/null 2>&1
+check $? "worktree add"
+echo "from worktree" >>"$WORK/wt-1/wiki/page-0004.md"
+git -C "$WORK/wt-1" commit -qam "edit from worktree" >/dev/null 2>&1
+check $? "commit from inside a linked worktree"
+WTLIST=$(git -C "$R" worktree list 2>/dev/null)
+case "$WTLIST" in *wt-1*) ok "worktree list reports it";;
+  *) bad "worktree list reports it" "wt-1 absent from worktree list";; esac
+git -C "$R" worktree move "$WORK/wt-1" "$WORK/wt-1-moved" >/dev/null 2>&1
+check $? "worktree move"
+git -C "$R" worktree remove --force "$WORK/wt-1-moved" >/dev/null 2>&1
+check $? "worktree remove"
+git -C "$R" worktree prune >/dev/null 2>&1
+check $? "worktree prune"
+fsck "$R"; check $? "fsck clean after worktree lifecycle"
+
+# ------------------------------------------------------------------ 4. concurrency
+echo
+echo "4. concurrency — the tests most likely to expose a weak filesystem"
+
+# Compare-and-swap on a ref is how release publishes safely. Exactly one of two racing
+# swaps from the same old value may win. Both winning means published knowledge can be lost.
+OLD=$(git -C "$R" rev-parse main)
+git -C "$R" branch -f cas-a main >/dev/null 2>&1
+git -C "$R" checkout -q cas-a 2>/dev/null
+echo a >>"$R/wiki/page-0005.md"; git -C "$R" commit -qam "cas a" >/dev/null 2>&1
+A=$(git -C "$R" rev-parse cas-a)
+git -C "$R" branch -f cas-b "$OLD" >/dev/null 2>&1
+git -C "$R" checkout -q cas-b 2>/dev/null
+echo b >>"$R/wiki/page-0006.md"; git -C "$R" commit -qam "cas b" >/dev/null 2>&1
+B=$(git -C "$R" rev-parse cas-b)
+git -C "$R" checkout -q main 2>/dev/null
+git -C "$R" update-ref refs/heads/main "$A" "$OLD" >/dev/null 2>&1; R1=$?
+git -C "$R" update-ref refs/heads/main "$B" "$OLD" >/dev/null 2>&1; R2=$?
+if [ "$R1" = "0" ] && [ "$R2" != "0" ]; then ok "compare-and-swap ref update: exactly one of two racing swaps wins"
+else bad "compare-and-swap ref update" "expected first to succeed and second to fail, got $R1 and $R2"; fi
+
+# 8 processes creating 8 different refs at once: the ref store must not lose or garble any.
+for i in 1 2 3 4 5 6 7 8; do
+  ( git -C "$R" update-ref "refs/heads/par-$i" "$OLD" >/dev/null 2>&1 ) &
+done
+wait
+COUNT=$(git -C "$R" for-each-ref 'refs/heads/par-*' --format='%(refname)' 2>/dev/null | wc -l | tr -d ' ')
+if [ "$COUNT" = "8" ]; then ok "8 concurrent ref creations all landed"
+else bad "8 concurrent ref creations all landed" "expected 8 refs, found $COUNT"; fi
+
+# Two commits racing in one worktree: the index lock must make one of them lose cleanly.
+# (Agents never share a worktree by design — this verifies the failure is clean if they do.)
+echo "race" >>"$R/wiki/page-0007.md"
+git -C "$R" add -A >/dev/null 2>&1
+( git -C "$R" commit -qm "race 1" >/dev/null 2>&1 ) &
+( git -C "$R" commit -qm "race 2" >/dev/null 2>&1 ) &
+wait
+fsck "$R"; check $? "fsck clean after two commits racing on one index"
+
+# Concurrent commits on separate worktrees is the real agent workload.
+for i in 1 2 3 4; do
+  git -C "$R" worktree add -q -b "conc-$i" "$WORK/conc-$i" main >/dev/null 2>&1
+done
+for i in 1 2 3 4; do
+  ( echo "concurrent $i" >>"$WORK/conc-$i/wiki/page-000$i.md"
+    git -C "$WORK/conc-$i" commit -qam "concurrent commit $i" >"$WORK/conc-$i.log" 2>&1 ) &
+done
+wait
+LANDED=0
+for i in 1 2 3 4; do
+  SUBJ=$(git -C "$R" log -1 --format='%s' "conc-$i" 2>/dev/null)
+  [ "$SUBJ" = "concurrent commit $i" ] && LANDED=$((LANDED+1))
+done
+if [ "$LANDED" = "4" ]; then ok "4 agents committing in parallel worktrees all landed"
+else bad "4 agents committing in parallel worktrees all landed" "only $LANDED of 4 landed"; fi
+fsck "$R"; check $? "fsck clean after concurrent worktree commits"
+
+# ------------------------------------------------------------------ 5. maintenance
+echo
+echo "5. object maintenance"
+
+git -C "$R" repack -a -d -q >/dev/null 2>&1
+check $? "repack"
+fsck "$R"; check $? "fsck clean after repack"
+git -C "$R" gc --quiet --prune=now >/dev/null 2>&1
+check $? "gc --prune=now"
+fsck "$R"; check $? "fsck clean after gc"
+git -C "$R" cat-file blob "$BLOB" 2>/dev/null | cmp -s - "$R/big.bin"
+check $? "8MB blob still byte-identical after repack and gc"
+
+# ------------------------------------------------------------------ report
+echo
+echo "----------------------------------------------------------------"
+printf 'automated: %s passed, %s failed\n' "$PASS" "$FAIL"
+if [ "$FAIL" != "0" ]; then
+  echo
+  echo "failed:"
+  printf '%s' "$FAILED_NAMES" | sed '/^$/d;s/^/  - /'
+  echo
+  echo "Do NOT try to repair Git semantics in the agent layer. Per the architecture decision"
+  echo "(section 16, rule 2): move the bare repository to a filesystem with certified Git"
+  echo "behaviour and keep TigerFS/PostgreSQL for the raw and control stores. That changes the"
+  echo "single-physical-store decision and needs an explicit architecture review."
+fi
+
+cat <<'MANUAL'
+
+MANUAL TESTS this script cannot perform — the gate is NOT complete without them:
+
+  1. Cross-mount visibility. Mount the same workspace on a second host, commit on host A,
+     and confirm host B sees it after close. Requires two hosts.
+  2. Crash during a ref update. Kill the TigerFS process mid-`git commit`, then run
+     `git fsck --full --strict`. Repeat ~20 times.
+  3. PostgreSQL restart mid-write. Restart the database during a large commit, then fsck.
+  4. Shared worktrees across hosts. Confirm the same mount path exists on every host; Git
+     worktree metadata stores absolute paths to the common git dir.
+  5. Scale and latency. Re-run this gate at 1k / 10k / 100k pages and record wall-clock for
+     `git status` (cold and warm), worktree creation, and gc. Also record WAL growth.
+  6. Restore drill. Restore the PostgreSQL backup onto a separate instance and fsck the
+     recovered repository.
+
+Record results in wiki/claims/git-on-tigerfs-unverified.md and promote or refute that claim.
+MANUAL
+
+[ "$FAIL" = "0" ] || exit 1

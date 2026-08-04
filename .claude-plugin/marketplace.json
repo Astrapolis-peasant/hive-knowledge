@@ -1,0 +1,21 @@
+{
+  "name": "hive-knowledge",
+  "description": "Multi-agent knowledge base: a git-published LLM wiki with role and team permission control.",
+  "owner": {
+    "name": "Astrapolis-peasant",
+    "url": "https://github.com/Astrapolis-peasant"
+  },
+  "plugins": [
+    {
+      "name": "hive-knowledge",
+      "source": "./plugins/hive-knowledge",
+      "description": "Read and write a hive-knowledge base: pinned-commit queries, task worktrees, and role-scoped writes.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Astrapolis-peasant",
+        "url": "https://github.com/Astrapolis-peasant"
+      },
+      "keywords": ["knowledge-base", "wiki", "multi-agent", "git", "permissions"]
+    }
+  ]
+}
