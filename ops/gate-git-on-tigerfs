@@ -48,6 +48,20 @@ check(){ if [ "$1" = "0" ]; then ok "$2"; else bad "$2" "${3:-command exited $1}
 # fsck is the arbiter after anything destructive: Git's own integrity opinion.
 fsck() { git -C "$1" fsck --full --strict >/dev/null 2>&1; }
 
+# GATE_STRIP_APPLEDOUBLE=1 deletes macOS AppleDouble sidecars (`._name`) before every git
+# call. macOS writes them on any filesystem that does not support extended attributes — every
+# file acquires a `com.apple.provenance` xattr, and an NFS-backed mount cannot store it — so a
+# fresh `.git` collects dozens. Git then reads them as refs and loose objects, and `fsck`
+# reports corruption that is not in the object store at all.
+#
+# This is a DIAGNOSTIC, not a supported mode: it approximates what a filesystem without the
+# AppleDouble shim (i.e. Linux) would look like. Do not read a pass here as a Linux result —
+# run the gate on Linux for that.
+if [ "${GATE_STRIP_APPLEDOUBLE:-0}" = "1" ]; then
+  echo "  note: stripping macOS AppleDouble sidecars before each git call (diagnostic mode)"
+  git() { find "$WORK" -name '._*' -delete 2>/dev/null; command git "$@"; }
+fi
+
 echo "Git-on-filesystem compatibility gate"
 echo "  target : $TARGET"
 echo "  git    : $(git --version | awk '{print $3}')"
@@ -75,17 +89,35 @@ except FileExistsError:
 EOF
 check $? "exclusive create (O_CREAT|O_EXCL) refuses an existing path"
 
+# Byte fidelity first: if reads do not return exactly what was written, every later check
+# fails for that reason instead of the one it is named after. TigerFS pads UTF-8 text that
+# does not end in a newline by one byte, so this check isolates that class of bug.
+$PY - "$WORK" <<'EOF' >/dev/null 2>&1
+import os, sys
+p = os.path.join(sys.argv[1], "fidelity")
+for data in (b"abc", b"abc\n", b"a\x00b", b""):
+    with open(p, "wb") as fh:
+        fh.write(data)
+    back = open(p, "rb").read()
+    os.unlink(p)
+    if back != data:
+        sys.exit(1)
+sys.exit(0)
+EOF
+check $? "a read returns exactly the bytes written (text, binary, empty)"
+
 # Atomic rename-over-existing is how a commit, a ref, and the index become visible.
 $PY - "$WORK" <<'EOF' >/dev/null 2>&1
 import os, sys
 d = sys.argv[1]
 old, new = os.path.join(d, "target"), os.path.join(d, "incoming")
-open(old, "w").write("old" * 1000)
-open(new, "w").write("new" * 1000)
+old_data, new_data = "old" * 1000 + "\n", "new" * 1000 + "\n"
+open(old, "w").write(old_data)
+open(new, "w").write(new_data)
 os.rename(new, old)
 if os.path.exists(new):
     sys.exit(1)                                  # source survived the rename
-if open(old).read() != "new" * 1000:
+if open(old).read() != new_data:
     sys.exit(1)                                  # destination not fully replaced
 os.unlink(old)
 sys.exit(0)
@@ -114,9 +146,10 @@ with open(p, "r+") as fh:
     fh.truncate(0)
 if os.path.getsize(p) != 0:
     sys.exit(1)
+tail = "y" * 99 + "\n"
 with open(p, "a") as fh:
-    fh.write("y" * 100)
-ok = os.path.getsize(p) == 100 and open(p).read() == "y" * 100
+    fh.write(tail)
+ok = os.path.getsize(p) == 100 and open(p).read() == tail
 os.unlink(p)
 sys.exit(0 if ok else 1)
 EOF
@@ -144,11 +177,11 @@ $PY - "$WORK" <<'EOF' >/dev/null 2>&1
 import os, subprocess, sys
 p = os.path.join(sys.argv[1], "cto")
 with open(p, "w") as fh:
-    fh.write("visible")
-out = subprocess.run([sys.executable, "-c", f"print(open({p!r}).read())"],
+    fh.write("visible\n")
+out = subprocess.run([sys.executable, "-c", f"print(open({p!r}).read(), end='')"],
                      capture_output=True, text=True)
 os.unlink(p)
-sys.exit(0 if out.stdout.strip() == "visible" else 1)
+sys.exit(0 if out.stdout == "visible\n" else 1)
 EOF
 check $? "a closed write is visible to a separate process (same mount)"
 

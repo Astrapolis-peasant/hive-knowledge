@@ -10,8 +10,13 @@
 #   kb validate [--strict] [--only ...]
 #   kb reindex [--check]
 #   kb pin                            resolve and print the current main commit
+#   kb ask <question>                 rank candidate pages (start here, not grep)
 #   kb show <commit> <path>           read a file from a pinned commit
-#   kb grep <commit> <pattern>        lexical search inside a pinned commit
+#   kb grep <commit> <pattern>        exact lexical search inside a pinned commit
+#   kb links <page-id>                inbound/outbound links and evidence for one page
+#   kb lint                           knowledge-health findings, report-only
+#   kb miss <question>                record that retrieval failed to find a known answer
+#   kb stats                          retrieval measurement summary
 #   kb release <branch>               release role only; compare-and-swap main
 #   kb install-hooks                  enforce validation at commit time
 #
@@ -334,6 +339,15 @@ cmd_release() {
     || die "main moved from $old while releasing — re-run; nothing was published"
   echo "published $new (was $old)"
   echo "branch    $branch merged"
+  # A worktree with main checked out does not notice a compare-and-swap ref update: its index
+  # and files still describe the old commit, so it looks spuriously "modified" and is missing
+  # whatever was just published. This is why the architecture wants a bare repository.
+  g worktree list --porcelain 2>/dev/null \
+    | awk '/^worktree /{wt=$2} /^branch refs\/heads\/main$/{print wt}' \
+    | while read -r stale; do
+        echo "warning   $stale has main checked out and is now stale"
+        echo "          refresh it with: git -C $stale reset --hard main"
+      done
   echo "reminder  append the accepted change to wiki/log.md on the next task"
 }
 
@@ -387,11 +401,16 @@ case "${1:-}" in
   reindex) shift; exec "$ROOT/checks/reindex" "$@" ;;
   permissions) shift; exec "$ROOT/checks/validate-permissions" "$@" ;;
   pin) shift; cmd_pin "$@" ;;
+  ask) shift; exec "$ROOT/checks/kb-ask" "$@" ;;
+  links) shift; exec "$ROOT/checks/kb-links" "$@" ;;
+  lint) shift; exec "$ROOT/checks/kb-lint" "$@" ;;
+  miss) shift; exec "$ROOT/checks/kb-miss" "$@" ;;
+  stats) shift; exec "$ROOT/checks/kb-stats" "$@" ;;
   show) shift; cmd_show "$@" ;;
   grep) shift; cmd_grep "$@" ;;
   release) shift; cmd_release "$@" ;;
   init) shift; cmd_init "$@" ;;
   install-hooks) shift; cmd_install_hooks "$@" ;;
-  ""|-h|--help|help) sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  ""|-h|--help|help) sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command '$1' — run 'kb help'" ;;
 esac
