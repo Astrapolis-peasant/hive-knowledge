@@ -1,0 +1,33 @@
+# TigerFS config tuned for hosting a Git repository.
+# NOTE: the config file takes FLAT keys, not the nested layout that `tigerfs config show`
+# prints. Nested keys are silently ignored and every value validates as zero.
+# Delete this file to restore defaults.
+port: 5432
+pool_size: 16
+pool_max_idle: 8
+default_schema: ""
+default_format: tsv
+binary_encoding: raw
+# Git writes a file then immediately stats it (index.lock, HEAD.lock, refs). Client-side
+# attribute or dentry caching makes those stats lie.
+attr_timeout: 0s
+entry_timeout: 0s
+# "append newline to file reads" — convenient for text, wrong for a binary object store.
+trailing_newlines: false
+no_filename_extensions: false
+dir_listing_limit: 100000
+dir_writing_limit: 100000
+max_pipeline_depth: 10
+query_timeout: 30s
+dir_filter_limit: 100000
+metadata_refresh_interval: 1s
+structural_metadata_refresh_interval: 1s
+# Server-side handle/attribute caches. Git deletes and immediately recreates the same
+# lockfile names, so a long-lived cache entry for a removed name is fatal.
+nfs_cache_idle_timeout: 5m
+nfs_cache_reaper_interval: 30s
+nfs_streaming_threshold: 10485760
+nfs_max_random_write_size: 104857600
+ddl_grace_period: 30s
+log_level: warn
+log_format: text

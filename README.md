@@ -120,8 +120,10 @@ cannot perform for you.
 The scaffold, checks, permission model, and seed wiki work today on a local filesystem —
 `bin/kb validate` passes with zero warnings.
 
-The gate has been run against real TigerFS (2026-08-04, macOS, TigerFS 0.7.0, PostgreSQL 17.9):
-**Git failed 23 of 34 checks**, including atomic rename and `git fsck` integrity. The raw and
+The gate has been run against real TigerFS (2026-08-04, macOS, TigerFS 0.7.0, PostgreSQL 17.9).
+Untuned: **11 of 34**. After tuning the client caches and stripping macOS AppleDouble sidecars:
+**21 of 35** — but the residual blocker is not tunable, because Git cannot reuse a lockfile name
+on this filesystem. The raw and
 control stores passed — bytes round-trip byte-exact through `tigerfs.kb_raw` and hash-verify
 against their manifests. So the deployed shape is the architecture's own pre-decided fallback:
 **Git on local disk, TigerFS and PostgreSQL for evidence and control state**. See
@@ -133,8 +135,9 @@ Also verified against a live PostgreSQL: the raw table refuses `UPDATE` and `DEL
 worktree, hook-enforced commit, compare-and-swap release, pinned query — runs on the hybrid
 deployment.
 
-Open, in order: rerun the gate on **Linux with the FUSE backend** (a pass would restore the
-single-store property), PostgreSQL 18+ so `uuidv7()` exists natively, the manual gate tests
+Open, in order: rerun the gate on **Linux with the FUSE backend** — one experiment that decides
+whether the single-store architecture is recoverable, since the blocker traces to the NFS handle
+cache that Linux may not share, PostgreSQL 18+ so `uuidv7()` exists natively, the manual gate tests
 (cross-host visibility, crash injection, restore drill), and retrieval measurement
 ([question.retrieval-scale-threshold](wiki/questions/retrieval-scale-threshold.md)) before any
 index gets built.

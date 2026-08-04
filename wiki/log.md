@@ -17,3 +17,6 @@ Format — four pipe-separated fields, checked by `checks/validate --only log`:
 - 2026-08-04 | task:t20260804-091259 | human.admin | Exempted the generated indexes from the team-ownership check, which had made reindexing impossible for any team but one.
 - 2026-08-04 | task:t20260804-091418 | agent.compile-02 | Reconciled synthesis.four-layer-separation with the gate result; the layers held, the single-store property did not.
 - 2026-08-04 | task:t20260804-091454 | human.admin | Deployed on PostgreSQL 17.9 + TigerFS 0.7.0 and recorded the operational findings in ops/tigerfs.md and README.
+- 2026-08-04 | task:t20260804-094203 | agent.ingest-01 | Registered the tuned Git-on-TigerFS gate run as evidence.
+- 2026-08-04 | task:t20260804-094218 | agent.compile-01 | Separated the four causes behind the gate failure: caching (fixed), macOS AppleDouble (not TigerFS), lockfile-name reuse (the blocker, not tunable), and one-byte text padding.
+- 2026-08-04 | task:t20260804-094329 | human.admin | Documented the flat-key config trap, the tuning table, and the working config as ops/tigerfs-config.yaml.
