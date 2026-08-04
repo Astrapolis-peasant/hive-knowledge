@@ -120,13 +120,21 @@ cannot perform for you.
 The scaffold, checks, permission model, and seed wiki work today on a local filesystem —
 `bin/kb validate` passes with zero warnings.
 
-The compatibility gate is written and passes 34/34 on local disk, which makes it a trustworthy
-control — but **it has never been run against TigerFS**, because nothing here has been deployed
-on it yet. Until it is, treat
-[claim.git-on-tigerfs-unverified](wiki/claims/git-on-tigerfs-unverified.md) as the open blocker
-for production it says it is.
+The gate has been run against real TigerFS (2026-08-04, macOS, TigerFS 0.7.0, PostgreSQL 17.9):
+**Git failed 23 of 34 checks**, including atomic rename and `git fsck` integrity. The raw and
+control stores passed — bytes round-trip byte-exact through `tigerfs.kb_raw` and hash-verify
+against their manifests. So the deployed shape is the architecture's own pre-decided fallback:
+**Git on local disk, TigerFS and PostgreSQL for evidence and control state**. See
+[claim.git-on-tigerfs-fails-the-gate](wiki/claims/git-on-tigerfs-fails-the-gate.md) and
+[ops/tigerfs.md](ops/tigerfs.md).
 
-Then, in order: PostgreSQL deployment with `db/schema.sql` and per-agent roles, the six manual
-gate tests (cross-host visibility, crash injection, restore drill), and retrieval measurement
+Also verified against a live PostgreSQL: the raw table refuses `UPDATE` and `DELETE`,
+`kb.audit_raw_hashes()` catches a byte/digest mismatch, and the full lifecycle — ingest, task
+worktree, hook-enforced commit, compare-and-swap release, pinned query — runs on the hybrid
+deployment.
+
+Open, in order: rerun the gate on **Linux with the FUSE backend** (a pass would restore the
+single-store property), PostgreSQL 18+ so `uuidv7()` exists natively, the manual gate tests
+(cross-host visibility, crash injection, restore drill), and retrieval measurement
 ([question.retrieval-scale-threshold](wiki/questions/retrieval-scale-threshold.md)) before any
 index gets built.

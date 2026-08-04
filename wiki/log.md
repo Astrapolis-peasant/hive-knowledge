@@ -12,3 +12,8 @@ Format — four pipe-separated fields, checked by `checks/validate --only log`:
 
 - 2026-08-04 | task:t20260804-000001 | human.admin | Seeded the knowledge base: scaffold, role and team permission model, deterministic checks, and ten pages covering the four foundations.
 - 2026-08-04 | task:t20260804-000002 | human.admin | Packaged the Claude Code plugin (kb skill, /kb-query, /kb-task) and added the TigerFS deployment path: ops/tigerfs.md, the Phase 0 compatibility gate at 34/34 on local disk, and .env.example.
+- 2026-08-04 | task:t20260804-090957 | agent.ingest-01 | Registered the Git-on-TigerFS gate output as evidence, captured into the TigerFS raw store.
+- 2026-08-04 | task:t20260804-091040 | agent.compile-01 | Recorded the measured gate result: new claim.git-on-tigerfs-fails-the-gate supersedes claim.git-on-tigerfs-unverified; reconciled the TigerFS, Git, and foundations pages.
+- 2026-08-04 | task:t20260804-091259 | human.admin | Exempted the generated indexes from the team-ownership check, which had made reindexing impossible for any team but one.
+- 2026-08-04 | task:t20260804-091418 | agent.compile-02 | Reconciled synthesis.four-layer-separation with the gate result; the layers held, the single-store property did not.
+- 2026-08-04 | task:t20260804-091454 | human.admin | Deployed on PostgreSQL 17.9 + TigerFS 0.7.0 and recorded the operational findings in ops/tigerfs.md and README.
