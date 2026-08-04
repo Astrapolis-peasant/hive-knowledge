@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 from kbcore import (
-    BODY_SECTIONS, CONFIDENCE, DIR_FOR_TYPE, GENERATED_MARKER, KbError,
+    BODY_SECTIONS, CONFIDENCE, DIR_FOR_TYPE, GENERATED_MARKER, GENERATED_PATHS, KbError,
     OPTIONAL_MANIFEST_KEYS, OPTIONAL_PAGE_KEYS, PAGE_STATUS, PAGE_TYPES,
     REQUIRED_MANIFEST_KEYS, REQUIRED_PAGE_KEYS, ROOT, SOURCE_STATUS, TYPE_FOR_DIR,
     VISIBILITY, as_list, is_iso_date, is_iso_timestamp, load_governance, load_manifests,
@@ -415,6 +415,8 @@ def cmd_permissions(args) -> int:
         if not path_matches(p, writable):
             violations.append(f"{p}: role {role} has no write grant for this path")
             continue
+        if p in GENERATED_PATHS:
+            continue          # derived, and verified byte-exact by check_index
         if p.startswith("wiki/") and not path_matches(p, owned):
             violations.append(f"{p}: no team of {actor} ({', '.join(teams) or 'none'}) "
                               f"owns this path — mark the task review_required")
