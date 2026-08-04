@@ -3,19 +3,27 @@
 The knowledge base runs on a local filesystem today. This is how it moves to the intended
 production substrate: PostgreSQL for bytes, TigerFS presenting them as files.
 
-**Read this first:** step 3 is a gate, not a formality. Git-on-TigerFS is an untested
-assumption ([wiki/claims/git-on-tigerfs-unverified.md](../wiki/claims/git-on-tigerfs-unverified.md)),
-and if it fails you deploy the fallback in step 7 rather than working around it.
+**Read this first — the gate has been run, and Git-on-TigerFS failed it.** On 2026-08-04, on
+macOS with TigerFS 0.7.0, Git failed 23 of 34 checks including atomic rename and `git fsck`
+integrity ([wiki/claims/git-on-tigerfs-fails-the-gate.md](../wiki/claims/git-on-tigerfs-fails-the-gate.md)).
+The fallback in step 7 is therefore the **current deployment**, not a contingency: Git on local
+disk, TigerFS and PostgreSQL for the raw and control stores, both of which were measured
+working. Linux with the FUSE backend is untested and could change this — rerun the gate there
+before assuming otherwise.
 
 ## Topology
 
 ```text
 PostgreSQL (one instance, WAL archiving on)
-└── TigerFS mount, same path on every agent host
-    ├── kb-git/      plaintext, history OFF   bare repo + linked worktrees
-    ├── kb-raw/      plaintext, history OFF   content-addressed immutable sources
-    └── kb-control/  markdown,  history opt.  tasks and leases
+├── TigerFS mount, same path on every agent host
+│   ├── kb_raw/      plaintext   content-addressed immutable sources   VERIFIED WORKING
+│   └── kb_control/  markdown    tasks and leases                      VERIFIED WORKING
+└── local disk
+    └── knowledge.git  bare repo + linked worktrees                    (Git fails on TigerFS)
 ```
+
+Workspace names use underscores: they become PostgreSQL table names in the `tigerfs` schema
+(`tigerfs.kb_raw`), and a hyphen there is awkward to quote.
 
 Three workspaces because they have different write patterns. History is **off** for `kb-git`:
 Git already versions its content, and versioning every loose object, lockfile, and packfile
@@ -23,10 +31,30 @@ rewrite doubles the write volume for nothing.
 
 ## 1. PostgreSQL
 
+**Use PostgreSQL 18 or newer.** TigerFS 0.7.0's workspace DDL defaults its primary key to
+`uuidv7()`, which arrived in PG 18. On 17.9 workspace creation fails with
+`function uuidv7() does not exist (SQLSTATE 42883)`.
+
 ```bash
 createdb ai_kb
-psql -v ON_ERROR_STOP=1 -d ai_kb -f db/schema.sql
 psql -d ai_kb -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"   # for kb.audit_raw_hashes()
+psql -v ON_ERROR_STOP=1 -d ai_kb -f db/schema.sql
+```
+
+On PG 17 a shim is enough to proceed, though it is not a supported configuration:
+
+```sql
+CREATE OR REPLACE FUNCTION public.uuidv7() RETURNS uuid
+LANGUAGE plpgsql VOLATILE AS $$
+DECLARE b bytea; ms bigint;
+BEGIN
+  ms := (extract(epoch from clock_timestamp()) * 1000)::bigint;
+  b  := uuid_send(gen_random_uuid());
+  b  := overlay(b placing substring(int8send(ms) from 3 for 6) from 1 for 6);
+  b  := set_byte(b, 6, (get_byte(b, 6) & 15) | 112);   -- version 7
+  b  := set_byte(b, 8, (get_byte(b, 8) & 63) | 128);   -- variant 10
+  RETURN encode(b, 'hex')::uuid;
+END $$;
 ```
 
 Then create one login role per agent, granted exactly one capability role, and set `kb.actor`
@@ -58,10 +86,40 @@ Create the three workspaces by declaring format and features in `.build/`. Addin
 opts a workspace into versioning; omit it to keep it off:
 
 ```bash
-echo "plaintext"        > /mnt/ai-kb/.build/kb-git       # history OFF, deliberately
-echo "plaintext"        > /mnt/ai-kb/.build/kb-raw       # history OFF, bytes are immutable
-echo "markdown,history" > /mnt/ai-kb/.build/kb-control   # history optional here
+export COPYFILE_DISABLE=1                              # see the macOS notes below
+echo "plaintext" > /mnt/ai-kb/.build/kb_raw            # history off, bytes are immutable
+echo "markdown"  > /mnt/ai-kb/.build/kb_control        # tasks and leases
 ```
+
+`history` requires the **TimescaleDB** extension; on plain PostgreSQL the write fails with
+`history requires TimescaleDB extension`. That costs the design nothing, since history is
+deliberately off for the byte stores anyway.
+
+Verify a workspace really exists — the write can report success while the DDL behind it fails,
+so check both sides:
+
+```bash
+ls -la /mnt/ai-kb/                                            # kb_raw, kb_control present?
+psql -d ai_kb -c "\dt tigerfs.*"                              # matching tables present?
+tail -f /path/to/tigerfs.log | grep -i error                  # the DDL error, if any
+```
+
+### macOS notes
+
+- TigerFS on macOS uses an **NFS loopback backend**, not FUSE — the log says
+  `Using NFS backend for macOS`. macFUSE is not a prerequisite.
+- Every mount advertises itself as `127.0.0.1:/`, and macOS keys NFS mounts by server spec.
+  **Killing the `tigerfs` process leaves a stale mount that needs root to clear**, and until it
+  is cleared, a *new* mount inherits the dead session: `stat` works, `readdir` hangs, and the
+  new server logs no incoming requests. Always `tigerfs unmount <path>` while the mount is
+  healthy. To recover: `sudo umount -f <path>`.
+- Run the mount process in a way that lets it hold the foreground (`--foreground`, own terminal
+  or supervisor). Piping its output into another command blocks that command indefinitely.
+- Without `COPYFILE_DISABLE=1`, macOS writes AppleDouble sidecars (`._name`) onto the mount.
+  TigerFS rejects them with `unsupported format` but they still land as rows — 5,464 bytes of
+  metadata per file.
+- Binary bodies are stored **base64-encoded** (the `encoding` column), so budget roughly 33%
+  storage amplification for binary evidence.
 
 Use the **same mount path on every host**. Git worktree metadata stores an absolute path to
 its common git dir, so a host that mounts at a different path sees what looks like corruption.
@@ -73,8 +131,15 @@ takes a `TIGERFS_`-prefixed environment variable.
 
 ```bash
 mkdir -p /tmp/gate-control && ops/gate-git-on-tigerfs /tmp/gate-control   # control: must pass
-ops/gate-git-on-tigerfs /mnt/ai-kb/kb-git                                 # the real gate
+ops/gate-git-on-tigerfs /mnt/ai-kb/kb_git                                 # the real gate
 ```
+
+Result on 2026-08-04 (macOS, TigerFS 0.7.0, PG 17.9 + shim, git 2.50.1): **11 passed, 23
+failed.** Passing: `O_EXCL`, `fsync`, 1MB binary round trip, `git init`, a 200-file commit, a
+non-conflicting merge, the worktree lifecycle, 8 concurrent ref creations. Failing: atomic
+rename, close-to-open visibility, truncate-then-append, `git fsck` after every destructive
+operation, the 8MB binary commit, rebase/cherry-pick/revert, conflict detection, ref
+compare-and-swap, parallel worktree commits, repack, and gc.
 
 34 automated checks: the primitives Git depends on (`O_EXCL`, atomic rename, binary round
 trip, truncate/append, `fsync` on file and directory, close-to-open), then Git itself (200-file
@@ -93,11 +158,12 @@ page and promote or refute it.
 `bin/kb` takes its locations from the environment — no code changes:
 
 ```bash
-export KB_GIT_DIR=/mnt/ai-kb/kb-git/knowledge.git
-export KB_WORKTREES=/mnt/ai-kb/kb-git/worktrees
-export KB_RAW=/mnt/ai-kb/kb-raw
-export KB_CONTROL=/mnt/ai-kb/kb-control
+export KB_GIT_DIR=/srv/kb/knowledge.git     # local disk
+export KB_WORKTREES=/srv/kb/worktrees        # local disk
+export KB_RAW=/mnt/ai-kb/kb_raw              # TigerFS -> PostgreSQL
+export KB_CONTROL=/mnt/ai-kb/kb_control      # TigerFS -> PostgreSQL
 export KB_ACTOR=agent.compile-01
+export COPYFILE_DISABLE=1                    # macOS only
 ```
 
 See [.env.example](../.env.example); load it with `set -a; . ./.env; set +a`.
@@ -109,10 +175,10 @@ wherever a worktree happens to sit.
 ## 5. Create the shared bare repository
 
 ```bash
-git clone --bare git@github.com:Astrapolis-peasant/hive-knowledge.git \
-  /mnt/ai-kb/kb-git/knowledge.git
-mkdir -p /mnt/ai-kb/kb-git/worktrees /mnt/ai-kb/kb-raw/sha256 \
-         /mnt/ai-kb/kb-control/{queue,leases,submitted}
+# Git on local disk — it does not survive on TigerFS (step 3)
+git clone --bare git@github.com:Astrapolis-peasant/hive-knowledge.git /srv/kb/knowledge.git
+mkdir -p /srv/kb/worktrees
+mkdir -p /mnt/ai-kb/kb_raw/sha256 /mnt/ai-kb/kb_control/{queue,leases,submitted}
 ```
 
 Bare, because no ordinary agent should be able to edit a checked-out `main`. Shared, because
@@ -132,9 +198,10 @@ proves you got the same bytes, and `bin/kb validate` checks it.
 | weekly | `SELECT kb.expire_leases();` to release leases held by crashed agents |
 | quarterly | restore drill onto a separate instance |
 
-## 7. If the gate fails
+## 7. If the gate fails — this is the current state
 
-Decided in advance, so nobody improvises during an incident:
+Decided in advance, so nobody improvised during the incident. The gate failed, so option two
+below is what is deployed:
 
 - **Correctness passes, performance is weak** — add ephemeral local object caches keyed by
   commit SHA, or keep fewer persistent worktrees. Do not add infrastructure before measuring.
@@ -142,6 +209,15 @@ Decided in advance, so nobody improvises during an incident:
   behaviour and keep TigerFS/PostgreSQL as the raw and control store. Do **not** try to repair
   Git semantics in the agent layer; an agent cannot make a non-atomic rename atomic.
 
-The second option changes the single-durable-store decision, so it needs an explicit
-architecture review rather than a quiet config change. Everything else in the design —
-the wiki model, the branch workflow, the permission layers — is unaffected either way.
+The second option changes the single-durable-store decision, so it needed an explicit
+architecture review rather than a quiet config change — recorded in
+[claim.git-on-tigerfs-fails-the-gate](../wiki/claims/git-on-tigerfs-fails-the-gate.md) and
+[synthesis.four-layer-separation](../wiki/syntheses/four-layer-separation.md).
+
+Everything else in the design was unaffected, which was the point of keeping the layers
+separate: the full lifecycle — ingest to the TigerFS raw store, task worktree, hook-enforced
+commit, compare-and-swap release, pinned-commit query — was exercised end-to-end on the hybrid
+deployment with no changes to the wiki model, the branch workflow, or the permission layers.
+
+The cost is real, though: published bytes and evidence bytes now live in two places with two
+recovery procedures. Back up and restore-test both together.
