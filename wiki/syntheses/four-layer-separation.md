@@ -12,6 +12,7 @@ sources:
   - source.karpathy-llm-wiki
 related:
   - topic.knowledge-base-foundations
+  - claim.git-on-tigerfs-fails-the-gate
   - concept.commit-pinned-read
   - concept.content-addressed-store
   - claim.git-on-tigerfs-unverified
@@ -64,15 +65,27 @@ drifting agent, a compromised process, and everything above being wrong.
 
 ## Disputed or Uncertain
 
-The separation costs something real: four components to operate, and one of them
-([[claim.git-on-tigerfs-unverified]]) unvalidated. If the Git-on-TigerFS gate fails, the layers
-do not collapse — the *physical* claim does, and Git moves to a certified filesystem while
-PostgreSQL keeps the raw and control stores. Worth stating clearly: that outcome would refute
-the single-durable-store decision, not this synthesis.
+The gate ran on 2026-08-04 and Git-on-TigerFS failed 23 of 34 checks
+([[claim.git-on-tigerfs-fails-the-gate]]), so this is now a fact rather than a contingency:
+Git lives on local disk, PostgreSQL and TigerFS keep the raw and control stores.
 
-Also open, and honestly: whether four layers is right for a knowledge base of ten pages. The
+The layers did not collapse — the *physical* claim did. That distinction is the whole argument
+of this page, and it is worth noticing that it survived contact with a real failure. Each
+layer's job stayed put; only the question of which bytes sit underneath the Git layer changed.
+Had the design fused publication into TigerFS savepoints, as the first row of the table below
+warns against, the same filesystem failure would have taken the knowledge base with it instead
+of costing one deployment decision.
+
+What it does cost, honestly: the single-durable-store property is gone. Published wiki bytes
+and evidence bytes now live in different places with different recovery procedures, so backup
+and restore must cover both and be tested together.
+
+Also open, and honestly: whether four layers is right for a knowledge base of this size. The
 argument above is about where this goes at a thousand pages and many agents. At the current
 size the machinery is larger than the content, and that is a defensible thing to dislike.
+
+Unresolved for the stack itself: whether TigerFS on Linux with the FUSE backend would pass the
+gate that the macOS NFS backend failed. If it did, the single-store property could come back.
 
 ## Evidence
 
