@@ -22,7 +22,7 @@
 
 ## Claims
 
-- [claim.git-on-tigerfs-fails-the-gate](claims/git-on-tigerfs-fails-the-gate.md) — Measured 2026-08-04 — Git on TigerFS 0.7.0 failed 23 of 34 gate checks, including atomic rename and fsck integrity. Rule 2 applies. · team.platform · confidence: high · public
+- [claim.git-on-tigerfs-fails-the-gate](claims/git-on-tigerfs-fails-the-gate.md) — Measured 2026-08-04 — Git on TigerFS 0.7.0 fails on lockfile reuse. Tuning lifted 11/34 to 21/35; the remaining blocker is not tunable. · team.platform · confidence: high · public
 - [claim.git-on-tigerfs-unverified](claims/git-on-tigerfs-unverified.md) — Superseded 2026-08-04 by a measured gate run. Kept for the reasoning that made the risk explicit before it was tested. · team.platform · confidence: high · public · status: superseded
 
 ## Questions
