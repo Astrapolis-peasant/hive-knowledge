@@ -68,7 +68,7 @@ Four enforcement layers, because each catches a failure the others cannot:
 | Instruction | `AGENTS.md` | a cooperative agent straying |
 | Verification | `checks/validate-permissions`, pre-commit hook | an agent that drifts or errs |
 | Filesystem | separate TigerFS workspaces, mount credentials | a compromised process |
-| Database | PostgreSQL roles, RLS, immutability trigger | everything above being wrong |
+| Database | PostgreSQL roles, RLS on `current_user`, immutability trigger | everything above being wrong |
 
 Cross-team changes are legitimate and expected. The route is: make the change, mark the task
 `review_required: true`, and let `release` merge it after a reviewer from the owning team
@@ -81,7 +81,26 @@ skips the branch check, because before any commit there is no `main` to protect.
 are a pure function of the pages and are verified byte-exact — ownership of them would only
 stop other teams from reindexing.
 
+**Identity is only authenticated at layer 4.** Each agent logs in as a PostgreSQL role named
+exactly its actor id, so `current_user` *is* the actor: columns default to it and row-level
+security compares it. Impersonation there requires actually authenticating as that role.
+Verified 2026-08-05 against a live database — an agent inserting a task row attributed to
+another actor is refused, and so is the same attempt after overriding a session variable.
+
+An earlier version compared a `kb.actor` session setting, which any session can overwrite with
+`SET kb.actor = 'someone.else'`. That made the policy decorative against precisely the case it
+existed for. The rule it teaches generalises: **authenticate, do not ask.** An identity the
+caller can set is not an identity.
+
 ## Disputed or Uncertain
+
+**`KB_ACTOR` at layers 1–2 is still self-asserted.** The pre-commit hook verifies *intent*, not
+identity — an agent can claim any actor id, or uninstall the hook. This is the largest
+remaining gap in the model, and it is closed at the forge rather than in this repository: with
+branch protection requiring a reviewed pull request, "only review advances `main`" is enforced
+by something the contributor does not control, and the approval *is* the release role. Until
+that is configured, treat the publish restriction as a strong convention rather than a
+guarantee.
 
 `visibility:` (`public` / `internal` / `restricted`) is **advisory in the Git layer**. Anyone who
 can read the commit can read a restricted page; the field tells a well-behaved query agent not
