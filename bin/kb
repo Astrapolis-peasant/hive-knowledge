@@ -7,6 +7,7 @@
 #   kb task list                      open tasks and leases
 #   kb new-page <type> <slug> <summary>
 #   kb ingest --file <path> --title <t> --type <web|paper|repo|conversation|note> [--url <u>]
+#   kb test                            run the validator test suite
 #   kb validate [--strict] [--only ...]
 #   kb reindex [--check]
 #   kb pin                            resolve and print the current main commit
@@ -383,6 +384,7 @@ if [ -z "${KB_ACTOR:-}" ]; then
   fi
   echo "pre-commit: bootstrap commit with no actor; permission check skipped" >&2
 fi
+"$ROOT/checks/test" >/dev/null || { echo "pre-commit: validator tests failed — run checks/test" >&2; exit 1; }
 "$ROOT/checks/validate" || exit 1
 [ -z "${KB_ACTOR:-}" ] || "$ROOT/checks/validate-permissions" || exit 1
 EOF
@@ -397,6 +399,7 @@ case "${1:-}" in
   task) shift; cmd_task "$@" ;;
   new-page) shift; cmd_new_page "$@" ;;
   ingest) shift; cmd_ingest "$@" ;;
+  test) shift; exec "$ROOT/checks/test" "$@" ;;
   validate) shift; exec "$ROOT/checks/validate" "$@" ;;
   reindex) shift; exec "$ROOT/checks/reindex" "$@" ;;
   permissions) shift; exec "$ROOT/checks/validate-permissions" "$@" ;;

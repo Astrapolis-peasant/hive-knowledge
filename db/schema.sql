@@ -40,7 +40,9 @@ CREATE TABLE IF NOT EXISTS kb.raw_object (
   byte_length bigint      NOT NULL CHECK (byte_length >= 0),
   body        bytea       NOT NULL,
   created_at  timestamptz NOT NULL DEFAULT now(),
-  created_by  text        NOT NULL,
+  -- Authenticated identity, not a claim. Each agent logs in as a role named exactly its
+  -- actor id, so current_user IS the actor and a client cannot misattribute a write.
+  created_by  text        NOT NULL DEFAULT current_user,
   CONSTRAINT raw_length_matches CHECK (octet_length(body) = byte_length)
 );
 
@@ -78,7 +80,7 @@ $$;  -- requires pgcrypto: CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE IF NOT EXISTS kb.release_log (
   id            bigserial PRIMARY KEY,
   released_at   timestamptz NOT NULL DEFAULT now(),
-  actor         text        NOT NULL,
+  actor         text        NOT NULL DEFAULT current_user,
   task_id       text        NOT NULL,
   branch        text        NOT NULL,
   base_commit   char(40)    NOT NULL,
@@ -95,7 +97,7 @@ REVOKE UPDATE, DELETE ON kb.release_log FROM PUBLIC, kb_release;
 
 CREATE TABLE IF NOT EXISTS kb.task (
   id               text PRIMARY KEY,
-  actor            text        NOT NULL,
+  actor            text        NOT NULL DEFAULT current_user,
   role             text        NOT NULL,
   team             text        NOT NULL,
   branch           text        NOT NULL UNIQUE,
@@ -113,13 +115,18 @@ CREATE INDEX IF NOT EXISTS task_open_idx ON kb.task (status, lease_expires_at);
 GRANT SELECT ON kb.task TO kb_reader, kb_admin;
 GRANT SELECT, INSERT, UPDATE ON kb.task TO kb_ingest, kb_author, kb_release;
 
--- An agent may only see and mutate its own task rows. This is what keeps one agent from
--- stealing another's lease or worktree; it is not a substitute for separate credentials.
+-- An agent may only see and mutate its own task rows, so one agent cannot steal another's
+-- lease or worktree.
+--
+-- This compares `current_user` — the role PostgreSQL authenticated — and NOT a session
+-- setting. An earlier version trusted current_setting('kb.actor'), which any session can
+-- overwrite with `SET kb.actor = 'someone.else'`, making the policy decorative against
+-- exactly the case it was written for. Authenticate, do not ask.
 ALTER TABLE kb.task ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS task_own_rows ON kb.task;
 CREATE POLICY task_own_rows ON kb.task
-  USING (actor = current_setting('kb.actor', true) OR pg_has_role(current_user, 'kb_release', 'MEMBER'))
-  WITH CHECK (actor = current_setting('kb.actor', true));
+  USING (actor = current_user OR pg_has_role(current_user, 'kb_release', 'MEMBER'))
+  WITH CHECK (actor = current_user);
 
 -- Expire stale leases so a crashed agent does not hold an area forever. The worktree and
 -- its commits survive; only the claim lapses.
@@ -132,14 +139,21 @@ LANGUAGE sql AS $$
   ) SELECT count(*)::int FROM e;
 $$;
 
+-- Upgrade path for a database created before identity was authenticated.
+ALTER TABLE kb.raw_object  ALTER COLUMN created_by SET DEFAULT current_user;
+ALTER TABLE kb.task        ALTER COLUMN actor      SET DEFAULT current_user;
+ALTER TABLE kb.release_log ALTER COLUMN actor      SET DEFAULT current_user;
+
 COMMIT;
 
 -- ---------------------------------------------------------------- deployment notes
 --
--- 1. Create one LOGIN role per agent, granted exactly one capability role:
+-- 1. Create one LOGIN role per agent, named EXACTLY the actor id in governance/roles.yaml,
+--    granted exactly one capability role:
 --      CREATE ROLE "agent.compile-01" LOGIN PASSWORD :'pw' IN ROLE kb_author;
---    Set kb.actor on connect so RLS and the audit trail agree with governance/roles.yaml:
---      ALTER ROLE "agent.compile-01" SET kb.actor = 'agent.compile-01';
+--    The role name is the identity. Do not set a `kb.actor` session variable: a session can
+--    overwrite one, so anything that trusts it can be impersonated. Let the columns default
+--    to current_user and let RLS compare current_user.
 -- 2. Give the release worker its own role and its own TigerFS mount credential. Nothing
 --    else may write the workspace holding refs/heads/main.
 -- 3. Keep `restricted` pages in a separate TigerFS workspace with its own credential if

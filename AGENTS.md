@@ -107,6 +107,7 @@ An answer you produced from weak retrieval is not knowledge. Do not file it back
 ## 6. Finish a task
 
 ```bash
+bin/kb test                   # validator test suite (also runs in the pre-commit hook)
 bin/kb validate               # deterministic checks; must pass
 bin/kb reindex                # wiki/index.md is generated — never hand-edit it
 git add -A && git commit -m "task(<id>): <what changed>"
