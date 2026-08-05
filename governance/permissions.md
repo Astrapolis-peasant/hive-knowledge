@@ -68,6 +68,34 @@ trigger (`db/schema.sql`). Content-addressing makes the intent checkable: the st
 must hash to the path they live at, and `checks/validate` verifies it whenever the bytes are
 reachable.
 
+## Identity
+
+Three identities exist, and only one of them is authenticated:
+
+| Identity | Set by | Trustworthy? |
+|---|---|---|
+| PostgreSQL `current_user` | database authentication | **yes** |
+| git committer + `KB_ACTOR` | the agent, checked by the hook | asserted, but leaves a trail |
+| a `kb.actor` session variable | anyone | **no — do not use** |
+
+Layer 4 therefore compares `current_user`. Each agent logs in as a role named *exactly* its
+actor id from `roles.yaml`, so the role name is the identity, columns default to
+`current_user`, and RLS compares it. An earlier version trusted `current_setting('kb.actor')`,
+which any session can overwrite with `SET kb.actor = 'someone.else'` — decorative against
+precisely the case it was written for. It is gone; do not reintroduce a settable identity.
+
+`KB_ACTOR` at layer 2 remains self-asserted, and that is a real limit: the hook verifies
+*intent*, not identity. The publish path is where it matters, so protect it at the server:
+
+```bash
+gh api -X PUT repos/:owner/:repo/branches/main/protection \
+  -F required_pull_request_reviews.required_approving_review_count=1 \
+  -F enforce_admins=true -F required_status_checks=null -F restrictions=null
+```
+
+With that in place, "only review advances `main`" is enforced by the forge rather than by a
+hook the contributor controls, and the PR approval *is* the release role.
+
 ## Auditing
 
 Every accepted change records actor id, role, task id, base commit, result commit, and
@@ -78,8 +106,12 @@ unless you have independently verified that it denies access.
 ## Installing layer 2
 
 ```bash
-bin/kb install-hooks    # pre-commit: validate + validate-permissions
+bin/kb install-hooks    # pre-commit: test + validate + validate-permissions
 ```
+
+The hook runs the validator test suite first (about 3ms). Checks that gate every commit are
+themselves worth testing — the glob matcher shipped with `agent/*` where it needed `agent/**`,
+silently granting nothing, and a unit test would have caught it before anyone relied on it.
 
 The hook reads `KB_ACTOR` from the environment and refuses any commit that does not have one:
 an unattributed commit cannot be permission-checked or audited. The single exception is the

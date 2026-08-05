@@ -363,6 +363,25 @@ def git(*argv) -> str:
                           text=True).stdout.strip()
 
 
+def path_violations(paths, writable, owned, actor, role, teams) -> list[str]:
+    """Decide write authority for changed paths. Pure: no git, no filesystem, no config.
+
+    role glob AND (outside wiki/ OR a team of the actor owns it). Generated indexes are
+    exempt from the team check only — they still need a role grant.
+    """
+    out = []
+    for p in paths:
+        if not path_matches(p, writable):
+            out.append(f"{p}: role {role} has no write grant for this path")
+            continue
+        if p in GENERATED_PATHS:
+            continue          # derived, and verified byte-exact by check_index
+        if p.startswith("wiki/") and not path_matches(p, owned):
+            out.append(f"{p}: no team of {actor} ({', '.join(teams) or 'none'}) "
+                       f"owns this path — mark the task review_required")
+    return out
+
+
 def cmd_permissions(args) -> int:
     try:
         roles = load_governance("roles.yaml")
@@ -411,15 +430,7 @@ def cmd_permissions(args) -> int:
         if branch == "main" and role != "release":
             violations.append(f"role {role} must not commit on main — use `bin/kb task start`")
 
-    for p in paths:
-        if not path_matches(p, writable):
-            violations.append(f"{p}: role {role} has no write grant for this path")
-            continue
-        if p in GENERATED_PATHS:
-            continue          # derived, and verified byte-exact by check_index
-        if p.startswith("wiki/") and not path_matches(p, owned):
-            violations.append(f"{p}: no team of {actor} ({', '.join(teams) or 'none'}) "
-                              f"owns this path — mark the task review_required")
+    violations += path_violations(paths, writable, owned, actor, role, teams)
 
     print(f"permission check  actor={actor} role={role} teams={','.join(teams) or '-'} "
           f"branch={branch or '-'}")

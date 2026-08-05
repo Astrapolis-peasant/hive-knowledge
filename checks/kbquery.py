@@ -71,10 +71,18 @@ def git(*argv, binary=False, stdin=None):
 
 
 def stem(word: str) -> str:
-    """Crude suffix stripping. Enough to bridge cache/caches, commit/commits/committed."""
+    """Crude suffix stripping. Enough to bridge cache/caches and commit/commits/committing.
+
+    English doubles the final consonant before -ing/-ed ("commit" -> "committing"), so undo
+    that too; without it a query for "commit" misses a page that says "committing".
+    """
     for suffix in ("ing", "edly", "ed", "es", "s"):
         if len(word) > len(suffix) + 3 and word.endswith(suffix):
-            return word[: -len(suffix)]
+            base = word[: -len(suffix)]
+            if (len(base) > 3 and base[-1] == base[-2]
+                    and base[-1] not in "aeiou" and base[-1] not in "ls"):
+                base = base[:-1]          # committ -> commit, stopp -> stop
+            return base
     return word
 
 

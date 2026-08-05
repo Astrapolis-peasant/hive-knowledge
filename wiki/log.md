@@ -21,3 +21,4 @@ Format — four pipe-separated fields, checked by `checks/validate --only log`:
 - 2026-08-04 | task:t20260804-094218 | agent.compile-01 | Separated the four causes behind the gate failure: caching (fixed), macOS AppleDouble (not TigerFS), lockfile-name reuse (the blocker, not tunable), and one-byte text padding.
 - 2026-08-04 | task:t20260804-094329 | human.admin | Documented the flat-key config trap, the tuning table, and the working config as ops/tigerfs-config.yaml.
 - 2026-08-04 | task:t20260804-095239 | human.admin | Added retrieval and health capability: kb ask (BM25 with trust weighting), kb links, kb lint, kb miss/stats measurement; taught the read path in AGENTS.md and the plugin skill.
+- 2026-08-05 | task:t20260805-013257 | human.admin | Authenticated layer-4 identity on current_user and removed the forgeable kb.actor session variable; added a 43-test suite for the validators, wired into the pre-commit hook.

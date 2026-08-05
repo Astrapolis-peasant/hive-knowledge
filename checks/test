@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Run the validator test suite. Stdlib unittest; no dependencies, no repository state.
+set -euo pipefail
+cd "$(cd "$(dirname "$0")/.." && pwd)"
+exec "${PYTHON:-python3}" -m unittest discover -s checks -p 'test_*.py' "$@"
