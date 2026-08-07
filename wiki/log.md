@@ -22,3 +22,4 @@ Format — four pipe-separated fields, checked by `checks/validate --only log`:
 - 2026-08-04 | task:t20260804-094329 | human.admin | Documented the flat-key config trap, the tuning table, and the working config as ops/tigerfs-config.yaml.
 - 2026-08-04 | task:t20260804-095239 | human.admin | Added retrieval and health capability: kb ask (BM25 with trust weighting), kb links, kb lint, kb miss/stats measurement; taught the read path in AGENTS.md and the plugin skill.
 - 2026-08-05 | task:t20260805-013257 | human.admin | Authenticated layer-4 identity on current_user and removed the forgeable kb.actor session variable; added a 43-test suite for the validators, wired into the pre-commit hook.
+- 2026-08-07 | task:t20260807-053259 | human.admin | Stated the company-knowledge-base scope: twelve boundaries a company KB must guarantee, what this repository currently meets, the gaps, and what is open. Added COMPANY_KB.md.

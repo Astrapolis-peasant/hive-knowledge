@@ -7,6 +7,8 @@ Markdown all the way down. No vector database, no queue, no custom API, no Pytho
 the validators are stdlib-only, so any agent with `python3`, `git`, and `bash` can work here.
 
 - **Agents start at [AGENTS.md](AGENTS.md)** — the operating contract.
+- Scope and status: [COMPANY_KB.md](COMPANY_KB.md) — what a company knowledge base must
+  guarantee, what is met here, what is open.
 - Design rationale: [AI_Knowledge_Base_Architecture.md](AI_Knowledge_Base_Architecture.md)
 - Permissions: [governance/permissions.md](governance/permissions.md)
 - What the wiki knows: [wiki/index.md](wiki/index.md) · what happened: [wiki/log.md](wiki/log.md)
